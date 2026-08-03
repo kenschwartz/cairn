@@ -10,7 +10,7 @@ Per-finding review rationale for [DESIGN.md](./DESIGN.md). DESIGN.md integrates 
 
 Reviewer: Opus (Claude family), deliberately cross-family from the GLM/zai models that authored and reviewed most of the design, so the gate is independent. Mandate: read the current full DESIGN.md (post gap-closure) and find what is MISSING, AMBIGUOUS, or UNIMPLEMENTABLE so nothing has to be invented at build time. Adversarial; a rubber-stamp is worthless.
 
-**Status after this review (same day):** B1, B2, G1, G5, G7, G8, G9, G10 addressed in DESIGN.md. Still open: G2, G3, G4, G11, G12, G13, and the NITs.
+**Status after this review (same day):** Addressed in DESIGN.md: B1, B2, G1, G3, G4, G5, G6, G7, G8, G9, G10. G2 scoped to v1 (known-pattern rules; the entropy token, entropy gate, and suppression marker are deferred to v2). G13 deferred to v2 (history scan). Still open: G11 (Phase 2/3 validate error/warning classification), G12 (Phase 4 tag design, punted to a nonexistent TODO.md), and the 14 NITs.
 
 ### BLOCKERS (block Phase 1)
 

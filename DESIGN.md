@@ -233,8 +233,9 @@ The formula builds from a public release archive, installs the `cairn` entry poi
 If neither Homebrew nor PyPI is usable from the corporate network, skip both and install offline. The complete alternative is:
 
 1. Vendor PyYAML (and any other pure-Python dependencies) into `third_party/` inside the repo, committed.
-2. Build the CLI as a `zipapp` (`python3 -m zipapp`) or run directly from the repo with system Python and `PYTHONPATH` pointing at `third_party/`.
-3. Document the exact commands in the repo README.
+2. Build the CLI as a `zipapp` (`python3 -m zipapp`) producing `cairn.pyz`, or run directly from the repo with system Python and `PYTHONPATH` pointing at `third_party/`.
+3. Install a `cairn` shim on PATH. The zipapp alone is `cairn.pyz`, not the bare `cairn` command, so a one-line wrapper is required: place the `.pyz` at a stable path (e.g. `~/.local/share/cairn/cairn.pyz`) and write a shim at `~/.local/bin/cairn` whose body is `exec python3 "$HOME/.local/share/cairn/cairn.pyz" "$@"` under a `#!/bin/sh` shebang, then `chmod +x` it. The executable now resolves under the install-method-agnostic PATH check (see `cairn doctor`).
+4. Document the exact commands in the repo README.
 
 This is a standalone install path with no pipx and no network. Because many bank Macs block PyPI, test this path early; do not treat it as a rare edge case. See "Testing the offline install path": co-primary means there is a test, not just this paragraph.
 
@@ -435,7 +436,7 @@ Do not force a complete MOC taxonomy on day one. Create MOCs incrementally as no
 
 Tags are required on every note and tracked in a generated tag index.
 
-Tags are **normalized at write time**: lowercased, with runs of whitespace collapsed to a single hyphen. `cairn new --tag "Trade Finance"` writes `trade-finance`. This makes search normalization a consistency check rather than a correction, and keeps tag rename/match behavior well-defined.
+Tags are **normalized at write time** following the slug rule (lowercase; every run of non-alphanumeric characters collapsed to a single hyphen) with one deliberate difference: the slash `/` is preserved so tag hierarchies work (`cfg/security`, `project/cairn`). So `cairn new --tag "Trade Finance"` writes `trade-finance`, `--tag "CFG/Security"` writes `cfg/security`, and `--tag "A & B"` writes `a-b`. The slash is the only non-alphanumeric a tag may contain. Filenames cannot contain a slash, which is why the slug rule (no slash) and the tag rule (slash preserved) differ on purpose. This makes search normalization a consistency check rather than a correction, and keeps tag rename/match behavior well-defined.
 
 New tags do not require confirmation during capture. That keeps capture fast. The CLI must provide cleanup commands so mistaken tags can be fixed later.
 
@@ -518,7 +519,7 @@ Input sources: positional string, `--file <path>`, or stdin. Multi-line paste fr
 Both `cairn new` and `cairn capture` derive the filename from the title using the same slug rule:
 
 - lowercase
-- transliterate accented characters where possible (for example e-acute to e), then drop anything that cannot be transliterated
+- transliterate via `unicodedata.normalize("NFKD", s)` then drop combining marks (characters whose `unicodedata.category()` is `Mn`); this turns e-acute into e and ñ into n. Characters that do not decompose and have no combining form (ß, CJK, emoji) are KEPT as-is rather than dropped, so the slug keeps its meaning and stays unique (dropping them would lose information and risk collisions)
 - replace every run of non-alphanumeric characters with a single hyphen
 - trim leading and trailing hyphens
 - cap at 60 characters
