@@ -107,7 +107,7 @@ This is the most important section in the design. A control enforced only inside
 
 Properties the hook layer must satisfy:
 
-- Hooks are content-pinned. `cairn doctor` verifies that both hooks exist and that their content matches the shipped bytes (by hash). A missing or altered hook fails doctor.
+- Hooks are content-pinned. `cairn doctor` verifies that both hooks exist, are executable, and match a fresh in-memory re-render from the current package and config (by SHA-256). A missing, altered, or stale hook fails doctor. See "Hook mechanism" below for how the re-render works.
 - Hooks do not survive `git clone`. `cairn init` is idempotent and reinstalls hooks, so the documented first step on any fresh clone is `cairn init` (or `cairn doctor --fix`).
 - Hooks must not depend on the pipx venv being active at hook time. The pre-commit scan logic is invokable via `python3` against the vendored/third_party copy or the installed entry point; the hook resolves the interpreter the same way `cairn doctor` does.
 - Hooks are local only and can be removed by a determined user with filesystem access. That is acknowledged: the hooks raise the bar and make accidents fail loudly, they are not a defense against deliberate circumvention by the repo owner. Server-side corporate GitHub scanning is the backstop for the residual risk.
@@ -116,30 +116,49 @@ Properties the hook layer must satisfy:
 
 The properties above say what the hooks guarantee. This section says how, and it is binding: an implementation that satisfies the properties by another mechanism is not conforming, because `cairn doctor` verifies the mechanism itself.
 
-**Hooks are RENDERED, not copied.** The package ships templates at `src/cairn/hooks/pre_commit.py.tmpl` and `src/cairn/hooks/pre_push.py.tmpl`. `cairn init` renders each template into a single self-contained script and writes it to `.git/hooks/pre-commit` and `.git/hooks/pre-push` (mode `0o755`). Rendering substitutes exactly three things:
+**Hooks are RENDERED, not copied.** The package ships templates at `src/cairn/hooks/pre_commit.py.tmpl` and `src/cairn/hooks/pre_push.py.tmpl`. `cairn init` renders each template into a single self-contained script and writes it to `.git/hooks/pre-commit` and `.git/hooks/pre-push` (mode `0o755`). Rendering substitutes exactly two things:
 
-1. `{{INTERPRETER}}` - the resolved Python interpreter path (see below).
-2. `{{SCAN_SOURCE}}` - the full source text of `src/cairn/scan.py`, inlined.
-3. `{{ALLOWLIST}}` - the remote allowlist as a JSON literal (pre-push only).
+1. `{{SCAN_SOURCE}}` - the full source text of `src/cairn/scan.py`, inlined.
+2. `{{ALLOWLIST}}` - the remote allowlist as a JSON literal (pre-push only).
 
-Inlining the scan source is deliberate and it is what removes the drift risk. There is exactly ONE authored copy of the scan logic (`src/cairn/scan.py`); the hook copy is generated from it and is never edited by hand. A test asserts that the rendered hook's inlined source is byte-identical to `scan.py`.
+Inlining the scan source is deliberate and it is what removes the drift risk. There is exactly ONE authored copy of the scan logic (`src/cairn/scan.py`); the hook copy is generated from it and is never edited by hand.
 
-**Content pinning is re-render-and-compare, not a stored hash.** `cairn doctor` renders the templates again, in memory, using the current package and the current config, and compares the SHA-256 of the result against the SHA-256 of the installed hook file. This is strictly better than a shipped constant: there is no hash to keep in sync, and it detects three failure modes with one check. A hand-edited hook, a hook left behind by an older Cairn version, and a hook whose baked-in allowlist no longer matches the configured one all produce the same clear failure with the same remedy, `cairn doctor --fix`.
+**Embedding scheme.** The inlined source is placed verbatim between two sentinel comment lines:
 
-**Interpreter resolution (shared by hooks and doctor).** This is the one ordering both must use, and it is the reason the scan is constrained to the standard library:
+```python
+# --- BEGIN CAIRN SCAN (generated, do not edit) ---
+<verbatim contents of scan.py>
+# --- END CAIRN SCAN ---
+```
 
-1. The interpreter path baked in at `cairn init` time (`sys.executable` as it was then), if that path still exists and reports >= 3.11.
-2. Otherwise `python3` from `PATH`, if it reports >= 3.11.
-3. Otherwise fail loudly with the remedy (`cairn doctor --fix`).
+Verbatim, at module level, not wrapped in a string. This avoids every quoting and escaping failure mode: a `"""` or a `\` inside `scan.py` is just source code. The byte-identity test extracts the region between the sentinels and compares it to `scan.py` on disk. `scan.py` must therefore never contain either sentinel line, which a test asserts.
 
-`cairn doctor` applies the same three steps and reports which one resolved. Step 2 is the reason the hooks keep working after a pipx reinstall, a venv move, or a Python upgrade, and it only works if the hook payload runs under a bare system interpreter.
+**`scan.py` interface (the hook calls this, so it is a contract):**
+
+```python
+def scan_bytes(data: bytes, path: str) -> list[Finding]
+```
+
+`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str` (already masked). An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable.
+
+**No interpreter is substituted.** The shebang is the static line `#!/usr/bin/env python3`. This is a correction to an earlier draft of this section, which baked the resolved interpreter path into the hook at init time and broke content pinning: `sys.executable` changes on every `pipx upgrade`, so a re-render would mismatch the installed hook and `cairn doctor` would fail after every upgrade despite the hooks working fine. Removing the field is better than exempting it from the comparison, because it deletes the failure mode instead of carving out an exception.
+
+This is safe on the target platform specifically: macOS with Xcode Command Line Tools always provides `/usr/bin/python3`, and `/usr/bin` is on `PATH` even in the reduced environments that GUI git clients hand to hooks. The hook checks `sys.version_info >= (3, 8)` and exits with a clear message otherwise. Note that floor is the SCAN's requirement, deliberately lower than the CLI's 3.11, because the hook may run under the system interpreter rather than the one Cairn was installed with.
 
 **Therefore: `src/cairn/scan.py` MUST import only the Python standard library.** No PyYAML, no third-party package, no import of the rest of `cairn`. The scan reads bytes and applies regexes; it never parses YAML, so this costs nothing. This constraint is load-bearing for the whole hook design and a test enforces it by importing `scan.py` with the rest of the package hidden from `sys.path`.
 
-**`--no-verify` is a real hole and is handled honestly.** `git commit --no-verify` and `git push --no-verify` skip hooks entirely. Cairn cannot prevent this and must not claim to. The preventive control is therefore paired with a DETECTIVE one:
+**Content pinning is re-render-and-compare, not a stored hash.** `cairn doctor` renders the templates again, in memory, from the current package and current config, and compares the SHA-256 of the result against the SHA-256 of the installed hook file. There is no hash constant to keep in sync, and one check catches three real failure modes with one remedy (`cairn doctor --fix`): a hand-edited hook, a hook left behind by an older Cairn version, and a hook whose baked-in allowlist no longer matches the configured one. Because both substituted fields are pure functions of package and config, this comparison has no false-positive class.
 
-- `cairn doctor --scan-history [N]` runs the scan over the working tree and the last N commits (default 20) and reports anything that would have been blocked. This catches a bypassed commit after the fact, which is the realistic accident case (a hurried `--no-verify` to get past an unrelated hook failure).
-- The design does not attempt to detect bypass at commit time; there is no reliable local signal for it. Server-side corporate scanning remains the backstop for a deliberate bypass, exactly as for a deleted hook.
+**Doctor also verifies the mode is `0o755`.** A content hash covers bytes, not permissions, and a hook that is not executable is silently skipped by git. Content-correct plus non-executable is the worst state available: it passes the pin and enforces nothing.
+
+**Scope for v1: one top-level worktree.** The hooks resolve vault-relative paths from the working directory git hands them, which is the worktree root for a normal repository. `core.hooksPath`, linked worktrees, and submodules are out of scope for v1; `cairn doctor` reports rather than adapts if it finds `core.hooksPath` set.
+
+**`--no-verify` is one bypass among several, which is why prevention is not attempted.** `git commit --no-verify` and `git push --no-verify` skip hooks entirely. Cairn cannot prevent this and must not claim to. Nor is the flag the actual gap: anyone who can pass it can equally delete the hook, `chmod -x` it, edit it to `exit 0`, or repoint `core.hooksPath`. The hook is a file in the user's own working directory and there is no privilege boundary. Git puts real enforcement server-side for exactly this reason, and corporate GitHub Enterprise scanning is that boundary here.
+
+So the preventive control is paired with a DETECTIVE one, and the detective control must FIRE ON ITS OWN:
+
+- `cairn doctor` runs a bounded history scan as part of its base checks: the working tree plus the last 20 commits, reported as a warning rather than a hard fail. `cairn doctor --scan-history N` widens the depth on demand.
+- Making it a base check rather than an opt-in flag is the whole point. A detective control nobody remembers to invoke is decorative, and `cairn doctor` already runs before write commands, so the accident case (a hurried `--no-verify` past an unrelated hook failure) surfaces on its own within one working session.
 
 ## Prerequisites and installation
 
@@ -188,7 +207,8 @@ The `cairn` entry point ends up at `~/.local/bin/cairn`. Do not use `~/bin`; `~/
 - `git` on PATH, version >= 2.30.
 - `git config user.email` set (auto-commit fails without it).
 - Vault directory exists and is a git repo.
-- **Both git hooks present and content-matching the shipped bytes** (hash-verified). A missing or altered hook is a hard fail; `cairn doctor --fix` reinstalls them.
+- **Both git hooks present, mode `0o755`, and SHA-256-matching a fresh re-render** from the current package and config. A missing, non-executable, altered, or stale hook is a hard fail; `cairn doctor --fix` reinstalls them.
+- A bounded history scan (working tree plus the last 20 commits) reported as a warning, which is what catches a commit made with `--no-verify`.
 - Remote policy: zero remotes is a **warning** (you cannot back up until you add one, but local-first use is allowed). One or more remotes: every remote URL must match the allowlist; any non-matching remote is a hard fail.
 - `~/.local/bin` on PATH.
 
@@ -572,10 +592,14 @@ The CLI must never silently drop or exclude a file. Both option 2 and option 3 r
 | Condition | pre-commit hook | `cairn validate` |
 | --- | --- | --- |
 | On-disk SHA-256 differs from the entry | **FAIL the commit** | error |
-| File named by an entry is missing | warn, do not block | error |
-| File in `assets/local/` with no entry | warn, do not block | error |
+| File named by an entry is missing | warn, do not block | **warn, not error** |
+| File in `assets/local/` with no entry | warn, do not block | warn |
 
-The asymmetry is deliberate. A content mismatch means a tracked file was replaced outside Cairn, which is exactly the integrity failure the manifest exists to catch, so it blocks. A missing file is a data-loss signal, not an integrity failure, and blocking every unrelated commit in the vault because one local asset was moved would train the user to reach for `--no-verify`, which costs more than it saves.
+Only a content mismatch is an error, and only it blocks. A mismatch means a tracked file was replaced outside Cairn, which is the exact integrity failure the manifest exists to catch.
+
+**A missing file must NOT be an error, and the reason is structural rather than a matter of taste.** `assets/local/` is gitignored and never pushed, while the manifest IS committed. So every clone of the vault has a complete manifest and zero local files. Cairn is explicitly built on one Mac and deployed to another, and `cairn init` on a fresh clone is the documented first step, which means an errors-on-missing rule would put every non-origin machine into permanent validation failure on day one. A warning with a count carries the same information without that outcome.
+
+There is no way to distinguish "missing because this is a clone" from "missing because it was deleted" without tracking machine identity per entry, which is more machinery than a single-user v1 should carry. The warning is the honest answer.
 
 **Cost.** The hook hashes every entry on every commit. The design already states that large local assets are rare, so this is a small number. If it ever becomes slow, that is a signal the vault holds too many local binaries, and the remedy is fewer binaries, not a weaker check.
 
@@ -651,6 +675,8 @@ Later dashboard sections:
 - waiting items
 - notes missing optional metadata
 
+One of these is not optional if `cairn new` defaults `--tag` to `untagged`: the dashboard must show a **count of `untagged` notes**. Without it the default is a silent leak, because an `untagged` note passes validation and nothing ever surfaces the backlog unless Ken remembers to search for it. The count is the forcing function that makes the convenient default safe.
+
 ## Git behavior
 
 After successful write commands, automatically create a local git commit.
@@ -725,11 +751,17 @@ These are the patterns, not a description of them. An implementation must ship t
 | Payment card | 13-19 digit run after stripping spaces and hyphens, passing the Luhn checksum | See false-positive rule below |
 | US SSN | `\b\d{3}-\d{2}-\d{4}\b` | Hyphenated form only; bare 9-digit runs are too noisy |
 
-**Entropy gate.** The labelled-token rule alone would fire on `password: changeme-changeme-changeme-xx`. The captured value must also have Shannon entropy, computed in bits per character over the captured string, of at least **3.0**. That threshold is a starting value chosen to admit realistic base64 and hex secrets while rejecting repeated or dictionary-like filler. It is a tunable constant in `scan.py` with a named symbol, and the test suite pins it from both sides: fixtures that must trip it and fixtures that must not. Treat a change to this number as a change requiring new fixtures, not a config knob to nudge when something is annoying.
+**Entropy gate.** The labelled-token rule alone would fire on a long repeated placeholder such as `token: abcabcabcabcabcabcabcabcabcabcabcab`. The captured value must also have Shannon entropy, computed in bits per character over the captured string, of at least **3.0**. That threshold admits realistic base64 and hex secrets while rejecting literal repeats and near-dictionary filler.
+
+The constant lives in `scan.py` under a named symbol and the test suite pins it from both sides. Changing it is legitimate, but it requires updating the fixtures in the same commit, which is what keeps it honest rather than a knob to nudge when the scan is annoying.
+
+Know what this gate does and does not buy. At 3.0 bits per character roughly ten distinct symbols already clear it, so the gate's real job is narrow: reject placeholders that the `{32,}` length rule alone would let through. Real secrets are high-entropy and clear it easily, so false negatives are largely theoretical. The live risk is the opposite: benign base64 clears it too (`token: dGhpcyBpcyBhIHRlc3Qgb2YgY2Fpcm4=` is harmless text and will fire). That is precisely what the suppression pragma below exists for.
 
 **Payment-card false positives are the known weak spot.** A Luhn-valid 16-digit run appears in ordinary text more often than intuition suggests, and this vault will contain technical notes full of identifiers. Two mitigations: a candidate is ignored when the surrounding 40 characters match `(?i)(commit|sha|hash|uuid|guid|ticket|jira|version|build)`, and the finding message names the rule so a false positive is obviously a false positive rather than a mystery.
 
-**Suppression.** A line containing `cairn:allow-secret` (in any comment syntax, matched as a plain substring) is skipped by every rule. This exists because a scanner with no escape hatch gets disabled wholesale the first time it blocks something legitimate, which is a worse outcome. Suppressions are visible in the diff and reviewable. `cairn validate` reports a count of suppressions in the vault so they cannot accumulate silently.
+**Suppression.** A line whose trailing content, after stripping whitespace, ends with the exact marker `cairn:allow-secret` is skipped by every rule. It is a line-suffix marker, not a substring match anywhere on the line: a plain substring rule would mean a sentence such as "see the cairn:allow-secret docs below" silently suppresses its own line, and any prose about the feature disables the scan wherever it appears. The marker suppresses only the line it terminates; it is not a block or file directive.
+
+This escape hatch exists because a scanner with no way out gets disabled wholesale the first time it blocks something legitimate, which is a far worse outcome than a reviewable exception. Suppressions are visible in the diff, and `cairn validate` reports a count of them in the vault so they cannot accumulate silently.
 
 **Failure behaviour.** Failure exits non-zero and prints, for each finding, the rule name, the file path, the line number, and the matched text truncated to 12 characters with the remainder masked. Never print the full matched secret: the hook output can land in a terminal scrollback, a CI log, or a screenshot. The write to disk still happened; the commit did not. The user resolves by editing and rerunning.
 
@@ -838,8 +870,8 @@ Fixtures live in `tests/fixtures/secrets/` and are **synthetic values that match
 Both directions are required for every rule, per the positive/negative discipline this project already uses elsewhere:
 
 - **Positive:** the rule fires on its fixture.
-- **Negative:** the rule does NOT fire on a near-miss (`AKIA` followed by fifteen characters; a 16-digit run that fails Luhn; `password: changeme-changeme-changeme-xx`, which matches the label pattern but is below the entropy gate).
-- **Entropy threshold pinned from both sides**, so a future tweak to the constant breaks a test rather than silently weakening the scan.
+- **Negative:** the rule does NOT fire on a near-miss (`AKIA` followed by fifteen characters; a 16-digit run that fails Luhn).
+- **Entropy threshold pinned from both sides**, so a future tweak to the constant breaks a test rather than silently weakening the scan. The below-gate fixture must be **long enough to reach the gate**: use `token: abcabcabcabcabcabcabcabcabcabcabcab` (35 characters, three distinct symbols, entropy 1.58). A shorter string is rejected by the `{32,}` length rule before the entropy code ever executes, so it would pass the test while proving nothing about the gate. That trap is not hypothetical: the first draft of this section used a 29-character fixture whose entropy was also 3.11, so it failed the length rule AND would have cleared the gate, and the test would have been green and meaningless in both directions.
 - **Suppression:** `cairn:allow-secret` on the line suppresses; on the adjacent line it does not.
 - **Masking:** assert the finding output does not contain the full matched string.
 
