@@ -49,10 +49,11 @@ tool. The vaults Cairn manages at work are a separate thing entirely and never c
 
 ## Status
 
-Design is complete and adversarially reviewed; no code yet. Phase 1 order is skeleton,
+Phase 1-3 are designed, adversarially reviewed, and build-ready; Phase 4 (tag mutation and
+listing) is deferred with open questions in [TODO.md](./TODO.md). No code yet. Phase 1 order is skeleton,
 `cairn init`, `cairn doctor`, content scan, `cairn new`, then auto-commit, with hooks and the scan
 landing before the first auto-commit. See the implementation phases in [DESIGN.md](./DESIGN.md).
 
-A completeness pass has run on the design (see [REVIEW.md](./REVIEW.md)): two Opus passes on
+A completeness pass has run on the design (see [REVIEW.md](./REVIEW.md)): three Opus passes on
 2026-08-03. Testing documentation belongs in the design, and the prompts used to produce it are
 captured alongside it.

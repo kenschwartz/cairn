@@ -99,7 +99,7 @@ This is the most important section in the design. A control enforced only inside
 `cairn init` owns hook installation. No other component can, because the hooks must exist before the first commit and must survive clones. The hooks are:
 
 - **`.git/hooks/pre-commit`** (fires on every commit):
-  - Runs the content scan (secret patterns + structured identifiers) on the staged files.
+  - Runs the content scan (credentials and key material) on the staged files.
   - Checks that no staged file under `assets/` exceeds the size cap.
   - Verifies the `assets/local/` manifest: for every manifest entry, the on-disk file's SHA-256 must match the recorded hash. A mismatch (file replaced outside Cairn) fails the commit with a clear message.
 - **`.git/hooks/pre-push`** (fires on every push):
@@ -448,7 +448,7 @@ Required Phase 4 tag operations:
 - remove a tag from selected notes
 - regenerate the tag index
 
-The exact Phase 4 command surface, `indexes/tags.md` format, tag normalization, mutation semantics, and multi-file write safety rules are not decided yet. `T004-implementation` is blocked until the `Q004-*` decisions in `TODO.md` are resolved and this section is updated with the accepted rules.
+The exact Phase 4 command surface, `indexes/tags.md` format, tag mutation semantics, and multi-file write safety rules are not decided yet. Tag NORMALIZATION at write time IS decided (the slug-plus-slash rule, see Tags) and ships in Phase 1; only the Phase 4 mutation and listing commands and the `indexes/tags.md` format remain open, tracked as `Q004-*` in [TODO.md](./TODO.md). `T004-implementation` is blocked until those resolve. Phase 4 is honestly DEFERRED - it is not part of the current build-ready scope (Phase 1-3).
 
 ## Todos
 
@@ -663,7 +663,7 @@ Search semantics:
   - `--project project-name`
 - Multiple filters are combined with `AND`.
 - Multiple `--tag` values require all listed tags to be present.
-- Tag, type, status, and project comparisons should normalize surrounding whitespace and case.
+- Tag comparisons run through the SAME normalizer tags are written with (lowercase; non-alphanumeric runs collapsed to a hyphen; slash preserved) so a query matches the stored form exactly - for example `--tag "CFG/Security"` matches a stored `cfg/security`. Type, status, and project comparisons normalize surrounding whitespace and case.
 - Search results should show path, title, type, status, project, tags, and a short matching excerpt when available.
 - **Malformed-file semantics (decided):** frontmatter filters never match a malformed file (it is excluded by any `--tag`/`--type`/`--status`/`--project` filter). A text query can still match a malformed file's body, and when it does the result carries a warning marker. The text query and the frontmatter filters combine with AND at the result level: a malformed file can appear only via a text match, never via a filter, and always flagged.
 
@@ -760,11 +760,11 @@ Before each auto-commit, the CLI runs a local content scan on the files it is ab
 
 ### Scan input
 
-The scan reads the **full staged content** of each staged file (`git show :<path>`), not the diff hunks. Scanning hunks would miss a secret that sits in unchanged context in a file being committed for the first time. Files whose staged content contains a null byte in the first 8192 bytes are treated as binary and skipped. Everything under `.git/` is out of scope by construction.
+The scan reads the **full staged content** of each staged file (`git show :<path>`), not the diff hunks. Scanning hunks would miss a secret that sits in unchanged context in a file being committed for the first time. Files whose staged content contains a null byte in the first 8192 bytes are treated as binary and skipped; the null-byte check runs inside `scan_bytes` (part of the contract), not as a separate file-level filter. Everything under `.git/` is out of scope by construction.
 
 ### Scan rules
 
-v1 ships the high-precision credential and key-material rules - the first six table rows (private key, public key block, SSH public key line, AWS key id, GitHub token, Anthropic API key): an implementation ships these and no fewer, and the test suite pins each with a positive and a negative case. All are unambiguous formats with effectively zero false positives. The **labelled-high-entropy-token** row and its entropy gate are v2 (specified here so v2 is add-not-design). The **payment-card** and **SSN** rows are dropped for this vault (Ken never has that data; optional for users who do).
+v1 ships the high-precision credential and key-material rules - the first six table rows (private key, AWS key id, public key block, SSH public key line, GitHub token, Anthropic API key): an implementation ships these and no fewer, and the test suite pins each with a positive and a negative case. All are unambiguous formats with effectively zero false positives. The **labelled-high-entropy-token** row and its entropy gate are v2 (specified here so v2 is add-not-design). The **payment-card** and **SSN** rows are dropped for this vault (Ken never has that data; optional for users who do).
 
 | Rule | Pattern | Notes |
 | --- | --- | --- |
@@ -790,11 +790,11 @@ Know what this gate does and does not buy. At 3.0 bits per character roughly ten
 
 This escape hatch exists because a scanner with no way out gets disabled wholesale the first time it blocks something legitimate, which is a far worse outcome than a reviewable exception. Suppressions are visible in the diff, and `cairn validate` reports a count of them in the vault so they cannot accumulate silently.
 
-**Failure behaviour.** Failure exits non-zero and prints, for each finding, the rule name, the file path, the line number, and a masked excerpt. Masking happens INSIDE `scan_bytes`, so `Finding.excerpt` is safe for every consumer (hook output, `cairn validate`, tests), never holding the full match. The rule: for a match of 8 characters or fewer, emit only its first and last character with the middle replaced by a placeholder; for a longer match, emit first-4 + placeholder + last-4. The full secret is never printed, even for short values, because hook output can land in terminal scrollback, a CI log, or a screenshot. The write to disk still happened; the commit did not. The user resolves by editing and rerunning.
+**Failure behaviour.** Failure exits non-zero and prints, for each finding, the rule name, the file path, the line number, and a masked excerpt. Masking happens INSIDE `scan_bytes`, so `Finding.excerpt` is safe for every consumer (hook output, `cairn validate`, tests), never holding the full match. The rule: for a match of 1 or 2 characters, emit only a fixed placeholder (`[...]`) and no real characters; for a match of 3 to 8 characters, emit only its first and last character with the middle replaced by `[...]`; for a longer match, emit first-4 + `[...]` + last-4. The full secret is never printed, even for short values, because hook output can land in terminal scrollback, a CI log, or a screenshot. The write to disk still happened; the commit did not. The user resolves by editing and rerunning.
 
 Scope and limits:
 
-- The scan covers secret patterns and structured identifiers only. It does **not** detect unstructured PII (names, addresses), free-text MNPI, or employer-specific reference formats. Those are governed by policy and by Ken; server-side corporate scanning is the backstop.
+- The scan covers credentials and key material only (private keys, public keys, AWS keys, GitHub tokens, Anthropic keys). It does **not** detect unstructured PII (names, addresses), free-text MNPI, or employer-specific reference formats. Those are governed by policy and by Ken; server-side corporate scanning is the backstop.
 - Scan implementation should be a small set of regexes shipped with the CLI and embedded in the hook. No third-party service, no network calls.
 
 ```text
@@ -986,4 +986,4 @@ The scan and hooks must exist before the first auto-commit, so Phase 1 lands the
 
 ## Adversarial review workflow
 
-Each new implementation phase requires an adversarial review gate before implementation. Use the current workflow in `working-agreement.md`: review `DESIGN.md`, `decisions.md`, `TODO.md`, current implementation, and relevant tests; convert only current blockers or required Ken decisions into `TODO.md`; keep long review transcripts out of working documents. This design itself passed a cross-family adversarial review on 2026-07-24 (verdict DESIGN-FIX-FIRST, fixes applied); see `REVIEW.md`.
+Each new implementation phase requires an adversarial review gate before implementation: review `DESIGN.md`, `REVIEW.md`, `TODO.md`, the current implementation, and relevant tests; convert only current blockers or required Ken decisions into `TODO.md`; keep long review transcripts out of working documents. The 2026-07-24 review's `decisions.md` and `working-agreement.md` were lost in a `/tmp` wipe before this repo stood up; their decisions are integrated into DESIGN.md and the per-finding rationale is gone. This design passed a cross-family adversarial review on 2026-07-24 (verdict DESIGN-FIX-FIRST, fixes applied) plus three Opus completeness passes on 2026-08-03, all logged in `REVIEW.md`.
