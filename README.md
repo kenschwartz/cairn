@@ -26,7 +26,7 @@ bundle for locked-down networks. Manages a folder of Markdown notes:
 - Wiki and relative-markdown links, with a link index and rename support
 - Tag and metadata search
 - Asset handling and local git auto-commit
-- A pre-commit secret-pattern scan (private keys, AWS keys) before every auto-commit; corporate GitHub scans server-side as backstop. v1 does not attempt PII detection.
+- A pre-commit credential and key-material scan (private keys, public keys, AWS keys, GitHub tokens, Anthropic keys) before every auto-commit; corporate GitHub scans server-side as backstop. v1 does not attempt PII detection.
 
 Full specification: [DESIGN.md](./DESIGN.md).
 

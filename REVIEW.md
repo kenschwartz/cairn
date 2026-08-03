@@ -86,3 +86,15 @@ Same Opus critic, re-run after the fixes above, to verify they landed and to cat
 - **NEW-9 to NEW-12 (NITs):** PyYAML version floor; missing-doc references; "co-primary" terminology muddled across three paths; hook vs CLI may run different Python versions.
 
 **Verdict after these re-review fixes:** BUILD-READY-WITH-GAPS for Phase 1. The blocker (NEW-1) is resolved; remaining items (NEW-6, NEW-8) are later-phase or resolve naturally as the hooks are built. The card/SSN drop and "v1 = private key + AWS" decision is the load-bearing change.
+
+---
+
+## 2026-08-03 - Opus third pass (coherence, after broaden-to-credentials)
+
+Same Opus critic, run after v1 was broadened from "private key + AWS" to full credential coverage (added public key, SSH public key, GitHub token, Anthropic API key). **Verdict: BUILD-READY-WITH-GAPS.** The scan definition was correct; the v1/v2 boundary had not propagated to the four other places it must hold. All findings this pass were doc/test propagation plus one regex bug - no design rework.
+
+**Closed this pass:** B1 (Data-handling "hard rules" line updated to current v1), B2 (README), G1 (scanner fixtures: dropped card/SSN, added the four new v1 rules), G2 (entropy + suppression tests marked v2), G3 (integration test 8 split; the `--scan-history` half moved to v2), G4 (SSH pub-key regex now matches FIDO `sk-ssh-ed25519@openssh.com` via an optional `@vendor` suffix), N2 (private-key regex now matches `ENCRYPTED PRIVATE KEY`), G5 (public-key disable mechanism specified: edit `src/cairn/scan.py` and re-run `cairn init`).
+
+**Still open (none block Phase 1):** NEW-6 (search tag-query normalization vs tag-write, Phase 3), NEW-8 / G6 (hook scaffolding body - staged-file enumeration, `git show`, output, exit code - resolves as the hooks are built in Phase 1), G12 (Phase 4 tag design, parked on a nonexistent `TODO.md`), and minor NITs (masking edge cases with no v1 impact; referenced files absent).
+
+**Net state:** v1 scan = six high-precision credential rules (private key, public key, SSH public key, AWS, GitHub token, Anthropic key); card and SSN dropped; entropy-token, entropy gate, suppression, and history scan deferred to v2. The v1/v2 boundary is now consistent across the rules table, the test list, the `cairn doctor` checks, the `scan_bytes` contract, the Data-handling hard rules, and the README.
