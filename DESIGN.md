@@ -162,14 +162,42 @@ So the preventive control is paired with a DETECTIVE one, and the detective cont
 
 ## Prerequisites and installation
 
+### The real constraint is NO ADMIN, not "no package manager"
+
+Corrected 2026-08-03 (Ken, verified on the machine). An earlier draft of this design assumed the work Mac had no Homebrew and treated that as a hard constraint. That was wrong and it was needlessly restrictive. **Homebrew IS installed on the deployment target and installs public packages fine.** The only installs that fail are ones that ask for `sudo`, and Ken has no admin rights.
+
+So the load-bearing invariant is precise: **nothing may require admin or `sudo`.** Homebrew already respects that, since a normal `brew install` is entirely user-space. Do not re-derive the stricter rule; it costs the cleanest install path for no benefit.
+
 ### Required on the Mac
 
-- **Python 3.11+**, provided by Xcode Command Line Tools. No admin required; `python3 --version` must report 3.11 or later. Do not depend on Homebrew, pyenv, or any interpreter that requires admin to install.
+- **Python 3.11+**, provided by Xcode Command Line Tools or Homebrew. `python3 --version` must report 3.11 or later.
 - **git 2.30+**, provided by Xcode Command Line Tools.
-- **PyPI reachable** from the corporate network for user-scoped `pip install --user`. If PyPI is blocked, the primary path is the offline install below (treat it as co-primary, not rare; many locked-down bank Macs block PyPI).
-- **Not required:** Homebrew, `git-lfs`, admin rights, pyenv, virtualenvwrapper, Docker.
+- **Homebrew**, present on the target. Available for the co-primary install path below.
+- **Not required:** admin rights, `sudo`, `git-lfs`, pyenv, virtualenvwrapper, Docker.
 
-### Install path (per-user, no admin)
+### Install paths, in preference order
+
+1. **Homebrew** (co-primary, cleanest, and the only one with a real upgrade story).
+2. **pipx**, when PyPI is reachable.
+3. **Offline zipapp**, when neither is.
+
+Two and three are FALLBACKS, not deprecated. Keep both working: a corporate network change can remove either of the first two without warning, and the offline path is the floor that always works.
+
+### Install via Homebrew (co-primary)
+
+```bash
+brew tap kenschwartz/<tap>
+brew install cairn
+cairn --version
+```
+
+The formula installs the `cairn` console entry point into Homebrew's prefix. No admin, no `sudo`, no writes to system directories, no `/Library/LaunchDaemons`. Updates are `brew upgrade cairn`, which is the thing neither other path gives cleanly.
+
+**Blocked precondition, and it gates this path entirely:** the tap and the release source must be reachable from the work Mac. The planned route is a public open-source repo, but `kenschwartz/cairn` is PRIVATE today, so **this path does not work yet**. Until the repo is public, pipx and the offline zipapp are the only functioning paths. The alternative is hosting the tap on the corporate CFG-INNERSOURCE GHE, which works but drags bank infrastructure into the loop; public is cleaner and keeps this project independent of the employer entirely.
+
+**Test the brew path HERE before relying on it there.** Build a local formula and `brew install --formula` from a scratch tap on the development Mac. The work Mac is not a debugging environment, and a broken formula discovered there costs a round trip measured in days.
+
+### Install path via pipx (fallback, needs PyPI)
 
 The CLI is packaged as a normal Python distribution with a console entry point (`cairn = cairn.cli:main`) declared in `pyproject.toml`. Installation uses `pipx` so the CLI runs in an isolated virtualenv and its dependencies (PyYAML, and whatever else v1 pulls in) never pollute user site-packages.
 
@@ -237,7 +265,9 @@ pytest
 Three rules that keep the two environments from contaminating each other:
 
 - **A dev-only dependency must never become a runtime dependency.** Runtime deps for v1 are PyYAML and nothing else, because every runtime dep has to survive the offline install. `pytest` and friends live in the `dev` extra only. A test asserting that `src/cairn/` imports nothing outside the standard library plus PyYAML enforces this.
-- **The deployment paths are tested here, not assumed.** Both the pipx install and the zipapp offline path are exercised by tests on this machine. The work Mac is not a debugging environment; anything that fails there costs a round trip measured in days.
+- **The deployment paths are tested here, not assumed.** The pipx install, the zipapp offline path, and the Homebrew formula are all exercised on this machine. The work Mac is not a debugging environment; anything that fails there costs a round trip measured in days.
+
+**The release loop, end to end (Ken, 2026-08-03):** build here on the home fleet, push, tag a release, then `brew upgrade cairn` on the work Mac. Nothing personal crosses to the work Mac and nothing from the work Mac comes back, so the loop touches no employer infrastructure and raises no security-policy question. That separation is the reason this shape was chosen over hosting the tap on corporate GHE.
 - **The remote allowlist must be overridable for tests, and defaults to empty.** A test vault has zero remotes, which `cairn doctor` treats as a warning rather than a failure, so the suite runs clean. Tests that exercise allowlist enforcement set the allowlist explicitly against a local bare repo. The allowlist is read from config at `cairn init` time and baked into the rendered pre-push hook; the test override goes through that same config path so the tests exercise the real mechanism.
 
 ## Architecture
