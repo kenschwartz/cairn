@@ -139,7 +139,7 @@ Verbatim, at module level, not wrapped in a string. This avoids every quoting an
 def scan_bytes(data: bytes, path: str) -> list[Finding]
 ```
 
-`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str`. `excerpt` is masked INSIDE `scan_bytes` (see "Failure behaviour") so it never holds a full secret for any consumer. An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable. v1 scope: the private-key and AWS-key rules plus the binary null-byte skip. The card, SSN, and entropy-token rules and the `cairn:allow-secret` suppression are not v1 and live inside scan_bytes when added (the hook inlines scan_bytes with no wrapper, so any scan behavior must live inside it).
+`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str`. `excerpt` is masked INSIDE `scan_bytes` (see "Failure behaviour") so it never holds a full secret for any consumer. An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable. v1 scope: the credential and key-material rules (private key, public key, SSH public key, AWS, GitHub token, Anthropic API key) plus the binary null-byte skip. The card, SSN, and entropy-token rules and the `cairn:allow-secret` suppression are not v1 and live inside scan_bytes when added (the hook inlines scan_bytes with no wrapper, so any scan behavior must live inside it).
 
 **No interpreter is substituted.** The shebang is the static line `#!/usr/bin/env python3`. This is a correction to an earlier draft of this section, which baked the resolved interpreter path into the hook at init time and broke content pinning: `sys.executable` changes on every `pipx upgrade`, so a re-render would mismatch the installed hook and `cairn doctor` would fail after every upgrade despite the hooks working fine. Removing the field is better than exempting it from the comparison, because it deletes the failure mode instead of carving out an exception.
 
@@ -756,7 +756,7 @@ This keeps auto-commit useful without silently bundling unrelated user edits or 
 
 Before each auto-commit, the CLI runs a local content scan on the files it is about to commit. The same scan also runs from the `.git/hooks/pre-commit` hook on every commit, so raw `git commit` and Copilot-assisted commits are scanned too. This is defense in depth; corporate GitHub Enterprise also scans server-side, but blocking locally avoids tripping security events.
 
-**v1 scope (decided 2026-08-03, "go lighter"):** v1 ships only the two credential rules that are both high-value for this vault and zero-false-positive: **private keys and AWS key ids**, plus binary-skip and block-on-fail. The payment-card and SSN rules are DROPPED for this vault (Ken never has access to card or SSN data and would never put it in a note, so they were pure false-positive friction; their patterns stay documented below as optional for users who do handle that data). The labelled-high-entropy-token rule, its entropy gate, the `cairn:allow-secret` suppression marker, and the bounded history scan are DEFERRED to v2. Net effect: v1 has no false-positive-prone rule, so it needs no suppression marker and cannot block a legitimate commit. Corporate GitHub Enterprise scans server-side and backstops the deferred and dropped classes until v2.
+**v1 scope (decided 2026-08-03, "go lighter", broadened to credentials):** v1 ships high-precision credential and key-material detection: private keys, public keys (PEM block and SSH public-key line), AWS key ids, GitHub tokens, and Anthropic API keys, plus binary-skip and block-on-fail. All are unambiguous formats with effectively zero false positives, so v1 still needs no suppression marker and cannot block a legitimate commit. (Public keys are not secret; blocking them is a cleanliness policy of no key material in notes - drop the public-key rows if they ever block a legitimate SSH-setup note.) The payment-card and SSN rules are DROPPED for this vault (Ken never has card or SSN data and would never note it; patterns stay documented below as optional for users who do). The labelled-high-entropy-token rule (generic unlabeled tokens), its entropy gate, the `cairn:allow-secret` suppression marker, and the bounded history scan are DEFERRED to v2. Corporate GitHub Enterprise scans server-side and backstops the deferred and dropped classes until v2.
 
 ### Scan input
 
@@ -764,12 +764,16 @@ The scan reads the **full staged content** of each staged file (`git show :<path
 
 ### Scan rules
 
-v1 ships the **private key** and **AWS access key id** rules only (the first two rows of the table): an implementation ships these and no fewer, and the test suite pins each with a positive and a negative case. The **payment-card**, **SSN**, and **labelled-high-entropy-token** rows are NOT v1: card and SSN are dropped for this vault (see the v1 scope note), and the entropy-token rule and its gate are v2 (specified here so v2 is add-not-design).
+v1 ships the high-precision credential and key-material rules - the first six table rows (private key, public key block, SSH public key line, AWS key id, GitHub token, Anthropic API key): an implementation ships these and no fewer, and the test suite pins each with a positive and a negative case. All are unambiguous formats with effectively zero false positives. The **labelled-high-entropy-token** row and its entropy gate are v2 (specified here so v2 is add-not-design). The **payment-card** and **SSN** rows are dropped for this vault (Ken never has that data; optional for users who do).
 
 | Rule | Pattern | Notes |
 | --- | --- | --- |
 | Private key block | `-----BEGIN (?:RSA \|EC \|DSA \|OPENSSH \|PGP )?PRIVATE KEY-----` | Highest confidence, effectively zero false positives |
 | AWS access key id | `\b(?:AKIA\|ASIA\|AGPA\|AIDA\|AROA\|AIPA\|ANPA\|ANVA\|ABIA)[0-9A-Z]{16}\b` | The documented AWS key-id prefixes |
+| Public key block | `-----BEGIN (?:.* )?PUBLIC KEY-----` | Public keys are NOT secret; blocking is a cleanliness policy (no key material in notes). Drop this row if it ever blocks a legitimate SSH-setup note |
+| SSH public key line | `^(?:ssh-rsa\|ssh-dss\|ssh-ed25519\|ecdsa-sha2-[a-z0-9-]+\|sk-[a-z0-9-]+)\s+[A-Za-z0-9+/=]{40,}` | authorized_keys / id_*.pub format. Same cleanliness rationale |
+| GitHub token | `gh[opsru]_[A-Za-z0-9]{36}` | PAT and friends; precise prefix, zero false positives |
+| Anthropic API key | `sk-ant-api[A-Za-z0-9_-]{20,}` | Anthropic `sk-ant-api...` tokens |
 | Labelled high-entropy token | `(?i)\b(?:secret\|token\|api[_-]?key\|apikey\|password\|passwd\|access[_-]?key)\b\s*[:=]\s*["']?([A-Za-z0-9+/=_\-]{32,})` | Capture group 1 must ALSO clear the entropy gate below |
 | Payment card | 13-19 digit run after stripping spaces and hyphens, passing the Luhn checksum | See false-positive rule below |
 | US SSN | `\b\d{3}-\d{2}-\d{4}\b` | Hyphenated form only; bare 9-digit runs are too noisy |
