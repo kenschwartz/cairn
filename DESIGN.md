@@ -109,7 +109,7 @@ Properties the hook layer must satisfy:
 
 - Hooks are content-pinned. `cairn doctor` verifies that both hooks exist, are executable, and match a fresh in-memory re-render from the current package and config (by SHA-256). A missing, altered, or stale hook fails doctor. See "Hook mechanism" below for how the re-render works.
 - Hooks do not survive `git clone`. `cairn init` is idempotent and reinstalls hooks, so the documented first step on any fresh clone is `cairn init` (or `cairn doctor --fix`).
-- Hooks must not depend on the pipx venv being active at hook time. The pre-commit scan logic is invokable via `python3` against the vendored/third_party copy or the installed entry point; the hook resolves the interpreter the same way `cairn doctor` does.
+- Hooks must not depend on the install venv being active at hook time. The pre-commit hook inlines `scan.py` verbatim (see "Hook mechanism") under the static `#!/usr/bin/env python3` shebang, so it needs no interpreter resolution and no vendored third_party. (An earlier draft described resolving a vendored copy or the installed entry point; that was superseded by the inlining design.)
 - Hooks are local only and can be removed by a determined user with filesystem access. That is acknowledged: the hooks raise the bar and make accidents fail loudly, they are not a defense against deliberate circumvention by the repo owner. Server-side corporate GitHub scanning is the backstop for the residual risk.
 
 ### Hook mechanism (implementation contract)
@@ -164,9 +164,9 @@ So the preventive control is paired with a DETECTIVE one, and the detective cont
 
 ### Required on the Mac
 
-- **Python 3.11+**, no admin required. Xcode Command Line Tools provides it (`python3 --version` must report 3.11 or later); a Homebrew Python is also acceptable, since brew itself needs no sudo on the work Mac. Avoid pyenv or any interpreter that itself requires admin to install.
+- **Python 3.11+**, no admin required (`python3 --version` must report 3.11 or later). Verified 2026-08-03: the target work Mac runs Python 3.14.6, so the floor is met with headroom. NOTE: 3.14.6 is NOT from Xcode Command Line Tools (CLT ships Python 3.9); confirm the actual source on the work Mac (likely Homebrew or a python.org installer) and record it. A Homebrew Python is acceptable since brew needs no sudo; avoid pyenv or any interpreter that itself requires admin to install.
 - **git 2.30+**, provided by Xcode Command Line Tools.
-- **PyPI reachable** from the corporate network for the user-scoped pipx install. If PyPI is blocked, fall back to the Homebrew path or the offline bundle below. Treat the offline path as co-primary, not rare; many locked-down bank Macs block PyPI.
+- **PyPI reachable** from the corporate network for the user-scoped pipx install. If PyPI is blocked, the Homebrew path works ONLY if public github.com is also reachable (brew fetches the tap and release archive from github.com; locked bank networks that block pypi.org commonly block github.com too, so verify on the work Mac). If both are blocked, the offline bundle below is the only guaranteed path. Treat the offline path as co-primary, not rare.
 - **Not required:** `git-lfs`, admin rights, pyenv, virtualenvwrapper, Docker. Homebrew is not required either, but it IS available on the work Mac; the Homebrew install path below is co-primary with pipx.
 
 ### Install path (per-user, no admin)
@@ -195,7 +195,11 @@ brew install cairn
 cairn --version
 ```
 
-**Prerequisite:** the tap and the release source must be public, so brew can fetch them from the locked work Mac. Open-sourcing Cairn is the plan; until the repo and a release archive are public, this path does not work and pipx/offline are the only options. The formula builds from a public release archive, installs the `cairn` entry point into brew's prefix, and performs no sudo steps. The no-admin invariant is unchanged: no system daemon, no root, no writes outside user space.
+**Prerequisites (both required, both tracked gates):**
+1. The tap and the release source are public so brew can fetch them. This gates on open-sourcing Cairn, a tracked pre-deploy step (see the open-source to-do in the vault Inbox), not an assumption; until the repo and a release archive are public, this path does not work and pipx/offline are the only functional paths.
+2. Public github.com is reachable from the work Mac. This is NOT guaranteed on a locked bank network (PyPI and github.com are often blocked together); verify before relying on brew as a PyPI fallback.
+
+The formula builds from a public release archive, installs the `cairn` entry point into brew's prefix, performs no sudo steps, and the no-admin invariant is unchanged: no system daemon, no root, no writes outside user space.
 
 ### `cairn init`
 
@@ -222,7 +226,7 @@ cairn --version
 - **Both git hooks present, mode `0o755`, and SHA-256-matching a fresh re-render** from the current package and config. A missing, non-executable, altered, or stale hook is a hard fail; `cairn doctor --fix` reinstalls them.
 - A bounded history scan (working tree plus the last 20 commits) reported as a warning, which is what catches a commit made with `--no-verify`.
 - Remote policy: zero remotes is a **warning** (you cannot back up until you add one, but local-first use is allowed). One or more remotes: every remote URL must match the allowlist; any non-matching remote is a hard fail.
-- `~/.local/bin` on PATH.
+- The directory of the running `cairn` executable is on PATH (so hooks and sub-processes can invoke it). This is install-method agnostic: do NOT hardcode `~/.local/bin`, which is pipx-only and false-fails under brew (`$(brew --prefix)/bin`), the offline zipapp shim, a dev venv (`.venv/bin`), and hermetic tests where HOME is a temp dir.
 
 ### Offline install fallback
 
@@ -711,6 +715,8 @@ allowed_prefixes = [
 
 Any remote URL not matching an allowed prefix is rejected by the pre-push hook. Use `cairn remote add <url>` (accepts only allowed URLs) so the user never touches `git remote` directly. If Citizens later provides a better-scoped organization or host, update this allowlist, the hook, and the implementation together.
 
+**Config source:** the allowlist lives at `~/.config/cairn/config.toml` under `[remote] allowed_prefixes`, per-user (not per-vault). When the file or key is absent, it defaults to the two CFG-INNERSOURCE prefixes above. `cairn init` reads it and bakes the resolved list into the rendered pre-push hook; tests override it through that same config path.
+
 ### Visibility tradeoff (documented decision)
 
 `CFG-INNERSOURCE` is an innersource organization. Even for a repository marked Private, org admins and org-wide tooling may have visibility into repository contents for governance purposes, and org-level discovery mechanisms exist. The vault contains personal working notes; this location was chosen for v1 because no more-scoped alternative is currently available. If Citizens later provides a personal or sandbox org, migrate the repo there and update `allowed_prefixes` accordingly.
@@ -897,6 +903,8 @@ Both directions are required for every rule, per the positive/negative disciplin
 ### Testing the offline install path
 
 The design states the offline path is co-primary because many bank Macs block PyPI. Co-primary means tested, not documented: a test builds the zipapp and runs `cairn --version` from it with no network and no pipx. A documented fallback that has never been executed is not a fallback.
+
+The Homebrew path makes the same co-primary claim and carries the same obligation. A full brew test needs a published tap, so it is a manual pre-release integration gate rather than a unit test in this suite: build the formula locally (`brew install --formula ./cairn.rb` from a scratch tap), run `cairn --version`, and confirm `cairn doctor` passes with the executable at `$(brew --prefix)/bin`. Until the tap exists this is a documented manual gate, not an automated test.
 
 ### No skipped tests
 

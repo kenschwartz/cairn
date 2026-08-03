@@ -17,8 +17,9 @@ Named for the stacked-stone trail marker. Notes as cairns you build yourself.
 
 ## What it is
 
-A [Python](https://www.python.org/) CLI, installed per-user with [pipx](https://pipx.pypa.io/)
-and no admin rights, managing a folder of Markdown notes:
+A [Python](https://www.python.org/) CLI, installed per-user with no admin rights via a public
+[Homebrew](https://brew.sh/) tap (co-primary) or [pipx](https://pipx.pypa.io/), with an offline
+bundle for locked-down networks. Manages a folder of Markdown notes:
 
 - Frontmatter-validated notes with a fixed type and status vocabulary
 - Fast capture into an inbox, and a todo-first dashboard
@@ -36,8 +37,10 @@ Cairn depends on anything at the bank, so there is no reason to develop it anywh
 tooling here is far better than the single assistant available on the work machine.
 
 **Deployed to** a locked-down corporate MacBook. That target is why the design insists on no admin
-rights, a working offline install path, and no dependency on Homebrew, pyenv, or Docker. Those
-constraints are real and they stay. They describe the deployment target, not this repository.
+rights and a working offline install path: the real constraints are no sudo and no assumption that
+PyPI or github.com is reachable. Homebrew is available there and is a co-primary install path; pipx
+and the offline bundle cover the rest. These constraints are real and they stay; they describe the
+deployment target, not this repository.
 
 ## What is NOT in this repository
 
