@@ -90,7 +90,7 @@ Version 1 is successful when Ken can:
 - **Cloud assistants are out of scope of the tooling's enforcement.** Copilot, Outlook, OneNote, and any other cloud-connected tool are not controlled by Cairn. Pasting note content into a cloud assistant is a separate, human risk decision: do not paste into Copilot anything you would not put in an email. "Nothing leaves the bank" is a guarantee about the vault tooling, not a guarantee about every tool Ken touches.
 - Assume the corporate Mac is subject to endpoint monitoring and that the corporate GitHub Enterprise repo is subject to admin review, audit, and retention. Treat everything written to the vault as observable by the employer.
 - Do not store customer PII, account numbers, credentials, MNPI, or any restricted data. These notes are personal working notes only.
-- A pre-commit content scan is required as defense in depth even though corporate GitHub also enforces server-side scanning. It is better to be blocked locally than to trip a security event. The scan covers **secret patterns and structured identifiers only** (private keys, AWS keys, high-entropy tokens, Luhn-valid card numbers, SSN patterns). Unstructured PII and MNPI (names, addresses, free text) cannot be caught by regex; those are governed by policy and by Ken, with server-side scanning as backstop. Do not imply the scan covers all PII.
+- A pre-commit content scan is required as defense in depth even though corporate GitHub also enforces server-side scanning. It is better to be blocked locally than to trip a security event. The scan covers **secret patterns and structured identifiers only**: v1 ships private keys, AWS keys, Luhn-valid card numbers, and SSN patterns; high-entropy-token detection is deferred to v2 (server-side scanning backstops it). Unstructured PII and MNPI (names, addresses, free text) cannot be caught by regex; those are governed by policy and by Ken, with server-side scanning as backstop. Do not imply the scan covers all PII.
 
 ## Security enforcement via git hooks
 
@@ -139,7 +139,7 @@ Verbatim, at module level, not wrapped in a string. This avoids every quoting an
 def scan_bytes(data: bytes, path: str) -> list[Finding]
 ```
 
-`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str` (already masked). An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable.
+`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str` (truncated, never the full match). An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable. v1 scope: the four known-pattern rules plus the binary null-byte skip. The entropy gate and the `cairn:allow-secret` suppression are v2 and live inside scan_bytes when added (the hook inlines scan_bytes with no wrapper, so any scan behavior must live inside it).
 
 **No interpreter is substituted.** The shebang is the static line `#!/usr/bin/env python3`. This is a correction to an earlier draft of this section, which baked the resolved interpreter path into the hook at init time and broke content pinning: `sys.executable` changes on every `pipx upgrade`, so a re-render would mismatch the installed hook and `cairn doctor` would fail after every upgrade despite the hooks working fine. Removing the field is better than exempting it from the comparison, because it deletes the failure mode instead of carving out an exception.
 
@@ -157,7 +157,7 @@ This is safe on the target platform specifically: macOS with Xcode Command Line 
 
 So the preventive control is paired with a DETECTIVE one, and the detective control must FIRE ON ITS OWN:
 
-- `cairn doctor` runs a bounded history scan as part of its base checks: the working tree plus the last 20 commits, reported as a warning rather than a hard fail. `cairn doctor --scan-history N` widens the depth on demand.
+- (v2, deferred) `cairn doctor` will run a bounded history scan as part of its base checks: the working tree plus the last 20 commits, reported as a warning rather than a hard fail, with `cairn doctor --scan-history N` to widen depth. Deferred from v1 because corporate GitHub scans server-side and backstops a `--no-verify` bypass; the v1 scan is the staged-content pre-commit hook only.
 - Making it a base check rather than an opt-in flag is the whole point. A detective control nobody remembers to invoke is decorative, and `cairn doctor` already runs before write commands, so the accident case (a hurried `--no-verify` past an unrelated hook failure) surfaces on its own within one working session.
 
 ## Prerequisites and installation
@@ -224,7 +224,7 @@ The formula builds from a public release archive, installs the `cairn` entry poi
 - `git config user.email` set (auto-commit fails without it).
 - Vault directory exists and is a git repo.
 - **Both git hooks present, mode `0o755`, and SHA-256-matching a fresh re-render** from the current package and config. A missing, non-executable, altered, or stale hook is a hard fail; `cairn doctor --fix` reinstalls them.
-- A bounded history scan (working tree plus the last 20 commits) reported as a warning, which is what catches a commit made with `--no-verify`.
+- (v2, deferred) A bounded history scan (working tree plus the last 20 commits) reported as a warning, which catches a commit made with `--no-verify`. Deferred from v1; server-side scanning backstops `--no-verify` until v2.
 - Remote policy: zero remotes is a **warning** (you cannot back up until you add one, but local-first use is allowed). One or more remotes: every remote URL must match the allowlist; any non-matching remote is a hard fail.
 - The directory of the running `cairn` executable is on PATH (so hooks and sub-processes can invoke it). This is install-method agnostic: do NOT hardcode `~/.local/bin`, which is pipx-only and false-fails under brew (`$(brew --prefix)/bin`), the offline zipapp shim, a dev venv (`.venv/bin`), and hermetic tests where HOME is a temp dir.
 
@@ -755,13 +755,15 @@ This keeps auto-commit useful without silently bundling unrelated user edits or 
 
 Before each auto-commit, the CLI runs a local content scan on the files it is about to commit. The same scan also runs from the `.git/hooks/pre-commit` hook on every commit, so raw `git commit` and Copilot-assisted commits are scanned too. This is defense in depth; corporate GitHub Enterprise also scans server-side, but blocking locally avoids tripping security events.
 
+**v1 scope (decided 2026-08-03, "go lighter"):** v1 ships the high-precision known-pattern rules only: private keys, AWS key ids, payment cards, SSNs, plus binary-skip and block-on-fail. The labelled-high-entropy-token rule, its entropy gate, the `cairn:allow-secret` suppression marker, and the bounded history scan are DEFERRED to v2; corporate GitHub Enterprise scans server-side and backstops those until then. Each deferred piece is specified below so v2 is add-rather-than-redesign.
+
 ### Scan input
 
 The scan reads the **full staged content** of each staged file (`git show :<path>`), not the diff hunks. Scanning hunks would miss a secret that sits in unchanged context in a file being committed for the first time. Files whose staged content contains a null byte in the first 8192 bytes are treated as binary and skipped. Everything under `.git/` is out of scope by construction.
 
-### Scan rules (version 1, exact)
+### Scan rules
 
-These are the patterns, not a description of them. An implementation must ship these and no fewer; the test suite pins each one with a positive and a negative case.
+The high-precision known-pattern rules below are v1 (private key, AWS, card, SSN): an implementation ships these and no fewer, and the test suite pins each one with a positive and a negative case. The labelled-high-entropy-token rule and its entropy gate are v2 (deferred, specified here so v2 is add-not-design).
 
 | Rule | Pattern | Notes |
 | --- | --- | --- |
