@@ -139,7 +139,7 @@ Verbatim, at module level, not wrapped in a string. This avoids every quoting an
 def scan_bytes(data: bytes, path: str) -> list[Finding]
 ```
 
-`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str` (truncated, never the full match). An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable. v1 scope: the four known-pattern rules plus the binary null-byte skip. The entropy gate and the `cairn:allow-secret` suppression are v2 and live inside scan_bytes when added (the hook inlines scan_bytes with no wrapper, so any scan behavior must live inside it).
+`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str`. `excerpt` is masked INSIDE `scan_bytes` (see "Failure behaviour") so it never holds a full secret for any consumer. An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable. v1 scope: the private-key and AWS-key rules plus the binary null-byte skip. The card, SSN, and entropy-token rules and the `cairn:allow-secret` suppression are not v1 and live inside scan_bytes when added (the hook inlines scan_bytes with no wrapper, so any scan behavior must live inside it).
 
 **No interpreter is substituted.** The shebang is the static line `#!/usr/bin/env python3`. This is a correction to an earlier draft of this section, which baked the resolved interpreter path into the hook at init time and broke content pinning: `sys.executable` changes on every `pipx upgrade`, so a re-render would mismatch the installed hook and `cairn doctor` would fail after every upgrade despite the hooks working fine. Removing the field is better than exempting it from the comparison, because it deletes the failure mode instead of carving out an exception.
 
@@ -716,7 +716,7 @@ allowed_prefixes = [
 
 Any remote URL not matching an allowed prefix is rejected by the pre-push hook. Use `cairn remote add <url>` (accepts only allowed URLs) so the user never touches `git remote` directly. If Citizens later provides a better-scoped organization or host, update this allowlist, the hook, and the implementation together.
 
-**Config source:** the allowlist lives at `~/.config/cairn/config.toml` under `[remote] allowed_prefixes`, per-user (not per-vault). When the file or key is absent, it defaults to the two CFG-INNERSOURCE prefixes above. `cairn init` reads it and bakes the resolved list into the rendered pre-push hook; tests override it through that same config path.
+**Config source:** the allowlist lives at `~/.config/cairn/config.toml` under `[remote] allowed_prefixes`, per-user (not per-vault). When the file or key is absent, it defaults to the two CFG-INNERSOURCE prefixes above. `cairn init` reads it and bakes the resolved list into the rendered pre-push hook; tests override it through that same config path. **Editing the allowlist requires re-baking the hook:** the baked list is a snapshot, so after editing config the user runs `cairn init` (or `cairn doctor --fix`) to re-render the pre-push hook. `cairn doctor` compares the installed hook against a fresh render from current config and FAILS LOUDLY when they diverge, so a stale baked list cannot silently persist. The fail direction to watch: tightening config without re-baking leaves the hook enforcing the old, looser list - doctor's drift check catches it before the next push, which is why the check is a hard fail, not a warning.
 
 ### Visibility tradeoff (documented decision)
 
@@ -756,7 +756,7 @@ This keeps auto-commit useful without silently bundling unrelated user edits or 
 
 Before each auto-commit, the CLI runs a local content scan on the files it is about to commit. The same scan also runs from the `.git/hooks/pre-commit` hook on every commit, so raw `git commit` and Copilot-assisted commits are scanned too. This is defense in depth; corporate GitHub Enterprise also scans server-side, but blocking locally avoids tripping security events.
 
-**v1 scope (decided 2026-08-03, "go lighter"):** v1 ships the high-precision known-pattern rules only: private keys, AWS key ids, payment cards, SSNs, plus binary-skip and block-on-fail. The labelled-high-entropy-token rule, its entropy gate, the `cairn:allow-secret` suppression marker, and the bounded history scan are DEFERRED to v2; corporate GitHub Enterprise scans server-side and backstops those until then. Each deferred piece is specified below so v2 is add-rather-than-redesign.
+**v1 scope (decided 2026-08-03, "go lighter"):** v1 ships only the two credential rules that are both high-value for this vault and zero-false-positive: **private keys and AWS key ids**, plus binary-skip and block-on-fail. The payment-card and SSN rules are DROPPED for this vault (Ken never has access to card or SSN data and would never put it in a note, so they were pure false-positive friction; their patterns stay documented below as optional for users who do handle that data). The labelled-high-entropy-token rule, its entropy gate, the `cairn:allow-secret` suppression marker, and the bounded history scan are DEFERRED to v2. Net effect: v1 has no false-positive-prone rule, so it needs no suppression marker and cannot block a legitimate commit. Corporate GitHub Enterprise scans server-side and backstops the deferred and dropped classes until v2.
 
 ### Scan input
 
@@ -764,7 +764,7 @@ The scan reads the **full staged content** of each staged file (`git show :<path
 
 ### Scan rules
 
-The high-precision known-pattern rules below are v1 (private key, AWS, card, SSN): an implementation ships these and no fewer, and the test suite pins each one with a positive and a negative case. The labelled-high-entropy-token rule and its entropy gate are v2 (deferred, specified here so v2 is add-not-design).
+v1 ships the **private key** and **AWS access key id** rules only (the first two rows of the table): an implementation ships these and no fewer, and the test suite pins each with a positive and a negative case. The **payment-card**, **SSN**, and **labelled-high-entropy-token** rows are NOT v1: card and SSN are dropped for this vault (see the v1 scope note), and the entropy-token rule and its gate are v2 (specified here so v2 is add-not-design).
 
 | Rule | Pattern | Notes |
 | --- | --- | --- |
@@ -786,7 +786,7 @@ Know what this gate does and does not buy. At 3.0 bits per character roughly ten
 
 This escape hatch exists because a scanner with no way out gets disabled wholesale the first time it blocks something legitimate, which is a far worse outcome than a reviewable exception. Suppressions are visible in the diff, and `cairn validate` reports a count of them in the vault so they cannot accumulate silently.
 
-**Failure behaviour.** Failure exits non-zero and prints, for each finding, the rule name, the file path, the line number, and the matched text truncated to 12 characters with the remainder masked. Never print the full matched secret: the hook output can land in a terminal scrollback, a CI log, or a screenshot. The write to disk still happened; the commit did not. The user resolves by editing and rerunning.
+**Failure behaviour.** Failure exits non-zero and prints, for each finding, the rule name, the file path, the line number, and a masked excerpt. Masking happens INSIDE `scan_bytes`, so `Finding.excerpt` is safe for every consumer (hook output, `cairn validate`, tests), never holding the full match. The rule: for a match of 8 characters or fewer, emit only its first and last character with the middle replaced by a placeholder; for a longer match, emit first-4 + placeholder + last-4. The full secret is never printed, even for short values, because hook output can land in terminal scrollback, a CI log, or a screenshot. The write to disk still happened; the commit did not. The user resolves by editing and rerunning.
 
 Scope and limits:
 

@@ -26,7 +26,7 @@ bundle for locked-down networks. Manages a folder of Markdown notes:
 - Wiki and relative-markdown links, with a link index and rename support
 - Tag and metadata search
 - Asset handling and local git auto-commit
-- A pre-commit secret and PII scan that runs before every auto-commit
+- A pre-commit secret-pattern scan (private keys, AWS keys) before every auto-commit; corporate GitHub scans server-side as backstop. v1 does not attempt PII detection.
 
 Full specification: [DESIGN.md](./DESIGN.md).
 
@@ -53,5 +53,6 @@ Design is complete and adversarially reviewed; no code yet. Phase 1 order is ske
 `cairn init`, `cairn doctor`, content scan, `cairn new`, then auto-commit, with hooks and the scan
 landing before the first auto-commit. See the implementation phases in [DESIGN.md](./DESIGN.md).
 
-An open completeness pass on the design comes before Phase 1: testing documentation belongs in the
-design, and the prompts used to produce it should be captured alongside it.
+A completeness pass has run on the design (see [REVIEW.md](./REVIEW.md)): two Opus passes on
+2026-08-03. Testing documentation belongs in the design, and the prompts used to produce it are
+captured alongside it.

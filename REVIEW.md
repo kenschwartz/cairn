@@ -66,3 +66,23 @@ Reviewer: Opus (Claude family), deliberately cross-family from the GLM/zai model
 ### Verdict
 
 BUILD-READY-WITH-GAPS. Phase 1 cannot start until B1 (doctor PATH check) and B2 (allowlist config) are resolved; G1, G2, G3, G4, G12, and G13 land inside Phase 1 itself.
+
+---
+
+## 2026-08-03 - Opus confirmation re-review
+
+Same Opus critic, re-run after the fixes above, to verify they landed and to catch new issues the edits introduced. **Verdict: NOT-READY** (a downgrade - the "go lighter" scan-scope cut introduced a blocker).
+
+**Confirmed resolved:** B2, G1, G4, G5, G6, G7, G8, G9. **Partially resolved:** B1 (the check is correct, but its parenthetical justification is wrong - hooks do not invoke `cairn`); G3 (slash rule is clear, but leading/trailing/double-slash edge cases are undefined); G10 (README Homebrew synced, but "PII scan" wording and a stale completeness-pass status remained).
+
+**New findings:**
+- **NEW-1 (BLOCKER, introduced by the scan cut):** v1 shipped the payment-card rule with the suppression marker deferred to v2, leaving no escape for its admitted false positives - the exact "scanner with no way out gets disabled wholesale" state the design argues against. **Resolved same day:** card and SSN rules dropped from v1 (Ken never has access to that data and would never note it), so v1 is private-key + AWS-key only - no false-positive-prone rule, no suppression needed. Entropy-token, entropy gate, suppression, and history scan stay deferred to v2.
+- **NEW-2 (GAP):** README called it a "PII scan" and listed the completeness pass as future. **Resolved.**
+- **NEW-3 / NEW-4 (GAP):** the v1/v2 boundary was stated once and not propagated to the rules table or the required-tests list. **Resolved** (inline v1/v2 markers added).
+- **NEW-5 (GAP, security):** the "truncate to 12 chars" masking printed an 11-char SSN in full and violated "never print the full secret"; masking location was unclear. **Resolved:** masking happens inside `scan_bytes` (every consumer safe); first/last-character scheme, full match never emitted.
+- **NEW-6 (GAP):** search tag-query normalization (whitespace + case) diverges from tag-write normalization (slug + slash). **Open** (Phase 3 search).
+- **NEW-7 (GAP, security):** the baked allowlist was fail-open on config tightening. **Resolved:** re-bake-on-edit is documented and `cairn doctor` fails loudly on hook-vs-config drift.
+- **NEW-8 (GAP):** the "binding" hook contract specifies the embedding but not the hook's own logic (staged-file enumeration, `git show`, output formatting, exit code). **Open** (address as the hooks are built in Phase 1).
+- **NEW-9 to NEW-12 (NITs):** PyYAML version floor; missing-doc references; "co-primary" terminology muddled across three paths; hook vs CLI may run different Python versions.
+
+**Verdict after these re-review fixes:** BUILD-READY-WITH-GAPS for Phase 1. The blocker (NEW-1) is resolved; remaining items (NEW-6, NEW-8) are later-phase or resolve naturally as the hooks are built. The card/SSN drop and "v1 = private key + AWS" decision is the load-bearing change.
