@@ -164,10 +164,10 @@ So the preventive control is paired with a DETECTIVE one, and the detective cont
 
 ### Required on the Mac
 
-- **Python 3.11+**, provided by Xcode Command Line Tools. No admin required; `python3 --version` must report 3.11 or later. Do not depend on Homebrew, pyenv, or any interpreter that requires admin to install.
+- **Python 3.11+**, no admin required. Xcode Command Line Tools provides it (`python3 --version` must report 3.11 or later); a Homebrew Python is also acceptable, since brew itself needs no sudo on the work Mac. Avoid pyenv or any interpreter that itself requires admin to install.
 - **git 2.30+**, provided by Xcode Command Line Tools.
-- **PyPI reachable** from the corporate network for user-scoped `pip install --user`. If PyPI is blocked, the primary path is the offline install below (treat it as co-primary, not rare; many locked-down bank Macs block PyPI).
-- **Not required:** Homebrew, `git-lfs`, admin rights, pyenv, virtualenvwrapper, Docker.
+- **PyPI reachable** from the corporate network for the user-scoped pipx install. If PyPI is blocked, fall back to the Homebrew path or the offline bundle below. Treat the offline path as co-primary, not rare; many locked-down bank Macs block PyPI.
+- **Not required:** `git-lfs`, admin rights, pyenv, virtualenvwrapper, Docker. Homebrew is not required either, but it IS available on the work Mac; the Homebrew install path below is co-primary with pipx.
 
 ### Install path (per-user, no admin)
 
@@ -184,6 +184,18 @@ cairn --version
 ```
 
 The `cairn` entry point ends up at `~/.local/bin/cairn`. Do not use `~/bin`; `~/.local/bin` is the standard `pipx` target.
+
+### Install via Homebrew (co-primary)
+
+Homebrew is available on the work Mac and installs public packages with **no sudo**, so a public Homebrew tap is the cleanest path and the one that gets updates for free (`brew upgrade cairn`). It is co-primary with pipx; pipx and the offline bundle remain as fallbacks for machines without brew or PyPI.
+
+```bash
+brew tap kenschwartz/cairn        # public tap repo: github.com/kenschwartz/homebrew-cairn
+brew install cairn
+cairn --version
+```
+
+**Prerequisite:** the tap and the release source must be public, so brew can fetch them from the locked work Mac. Open-sourcing Cairn is the plan; until the repo and a release archive are public, this path does not work and pipx/offline are the only options. The formula builds from a public release archive, installs the `cairn` entry point into brew's prefix, and performs no sudo steps. The no-admin invariant is unchanged: no system daemon, no root, no writes outside user space.
 
 ### `cairn init`
 
@@ -214,7 +226,7 @@ The `cairn` entry point ends up at `~/.local/bin/cairn`. Do not use `~/bin`; `~/
 
 ### Offline install fallback
 
-If PyPI is unreachable from the corporate network, skip pipx entirely. The complete alternative is:
+If neither Homebrew nor PyPI is usable from the corporate network, skip both and install offline. The complete alternative is:
 
 1. Vendor PyYAML (and any other pure-Python dependencies) into `third_party/` inside the repo, committed.
 2. Build the CLI as a `zipapp` (`python3 -m zipapp`) or run directly from the repo with system Python and `PYTHONPATH` pointing at `third_party/`.
@@ -233,6 +245,8 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
 ```
+
+Once the public tap exists, the dev-to-deploy loop is: build here, push, tag a release, then `brew upgrade cairn` on the work Mac. No personal data crosses over; it is a public package install.
 
 Three rules that keep the two environments from contaminating each other:
 
