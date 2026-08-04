@@ -15,7 +15,7 @@ project: cairn
 >
 > Cairn contains nothing proprietary: no bank data, no customer data, no PII. See [README](./README.md).
 >
-> History: drafted with Copilot 2026-07-24, then revised the same day after a cross-family
+> History: drafted with [Copilot](https://www.microsoft.com/en-us/microsoft-365/copilot) 2026-07-24, then revised the same day after a cross-family
 > adversarial review (verdict DESIGN-FIX-FIRST; safety controls moved from CLI-only to git-hook
 > enforcement). The companion `REVIEW.md` and `decisions.md` D027-D042 from that review are not
 > currently on this machine; recovering them is tracked in the vault note `Cairn`.
@@ -143,9 +143,9 @@ def scan_bytes(data: bytes, path: str) -> list[Finding]
 
 **No interpreter is substituted.** The shebang is the static line `#!/usr/bin/env python3`. This is a correction to an earlier draft of this section, which baked the resolved interpreter path into the hook at init time and broke content pinning: `sys.executable` changes on every `pipx upgrade`, so a re-render would mismatch the installed hook and `cairn doctor` would fail after every upgrade despite the hooks working fine. Removing the field is better than exempting it from the comparison, because it deletes the failure mode instead of carving out an exception.
 
-This is safe on the target platform specifically: macOS with Xcode Command Line Tools always provides `/usr/bin/python3`, and `/usr/bin` is on `PATH` even in the reduced environments that GUI git clients hand to hooks. The hook checks `sys.version_info >= (3, 8)` and exits with a clear message otherwise. Note that floor is the SCAN's requirement, deliberately lower than the CLI's 3.11, because the hook may run under the system interpreter rather than the one Cairn was installed with.
+This is safe on the target platform specifically: macOS with [Xcode Command Line Tools](https://developer.apple.com/library/archive/technotes/tn2339/_index.html) always provides `/usr/bin/python3`, and `/usr/bin` is on `PATH` even in the reduced environments that GUI git clients hand to hooks. The hook checks `sys.version_info >= (3, 8)` and exits with a clear message otherwise. Note that floor is the SCAN's requirement, deliberately lower than the CLI's 3.11, because the hook may run under the system interpreter rather than the one Cairn was installed with.
 
-**Therefore: `src/cairn/scan.py` MUST import only the Python standard library.** No PyYAML, no third-party package, no import of the rest of `cairn`. The scan reads bytes and applies regexes; it never parses YAML, so this costs nothing. This constraint is load-bearing for the whole hook design and a test enforces it by importing `scan.py` with the rest of the package hidden from `sys.path`.
+**Therefore: `src/cairn/scan.py` MUST import only the Python standard library.** No [PyYAML](https://pyyaml.org/), no third-party package, no import of the rest of `cairn`. The scan reads bytes and applies regexes; it never parses YAML, so this costs nothing. This constraint is load-bearing for the whole hook design and a test enforces it by importing `scan.py` with the rest of the package hidden from `sys.path`.
 
 **Content pinning is re-render-and-compare, not a stored hash.** `cairn doctor` renders the templates again, in memory, from the current package and current config, and compares the SHA-256 of the result against the SHA-256 of the installed hook file. There is no hash constant to keep in sync, and one check catches three real failure modes with one remedy (`cairn doctor --fix`): a hand-edited hook, a hook left behind by an older Cairn version, and a hook whose baked-in allowlist no longer matches the configured one. Because both substituted fields are pure functions of package and config, this comparison has no false-positive class.
 
@@ -166,7 +166,7 @@ So the preventive control is paired with a DETECTIVE one, and the detective cont
 
 - **Python 3.11+**, no admin required (`python3 --version` must report 3.11 or later). Verified 2026-08-03: the target work Mac runs Python 3.14.6, so the floor is met with headroom. NOTE: 3.14.6 is NOT from Xcode Command Line Tools (CLT ships Python 3.9); confirm the actual source on the work Mac (likely Homebrew or a python.org installer) and record it. A Homebrew Python is acceptable since brew needs no sudo; avoid pyenv or any interpreter that itself requires admin to install.
 - **git 2.30+**, provided by Xcode Command Line Tools.
-- **PyPI reachable** from the corporate network for the user-scoped pipx install. If PyPI is blocked, the Homebrew path works ONLY if public github.com is also reachable (brew fetches the tap and release archive from github.com; locked bank networks that block pypi.org commonly block github.com too, so verify on the work Mac). If both are blocked, the offline bundle below is the only guaranteed path. Treat the offline path as co-primary, not rare.
+- **PyPI reachable** from the corporate network for the user-scoped [pipx](https://pipx.pypa.io/) install. If PyPI is blocked, the Homebrew path works ONLY if public github.com is also reachable (brew fetches the tap and release archive from github.com; locked bank networks that block pypi.org commonly block github.com too, so verify on the work Mac). If both are blocked, the offline bundle below is the only guaranteed path. Treat the offline path as co-primary, not rare.
 - **Not required:** `git-lfs`, admin rights, pyenv, virtualenvwrapper, Docker. Homebrew is not required either, but it IS available on the work Mac; the Homebrew install path below is co-primary with pipx.
 
 ### Install path (per-user, no admin)
