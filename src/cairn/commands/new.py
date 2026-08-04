@@ -1,8 +1,10 @@
 import datetime
 import sys
+import uuid
 from pathlib import Path
 
-from cairn import frontmatter, slugs, tags, vault
+from cairn import frontmatter, slugs, tags
+from cairn.errors import CairnError
 from cairn.gitadapter import is_dirty, commit_paths
 
 VALID_TYPES = {"note", "todo", "meeting", "reference", "project", "moc"}
@@ -27,7 +29,10 @@ def run_new(args):
 
     vault_path = Path.cwd().resolve()
     notes_dir = vault_path / "notes"
-    notes_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        notes_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise CairnError(f"could not create {notes_dir}: {exc}") from exc
 
     base_slug = slugs.slugify(title)
     base_path = notes_dir / f"{base_slug}.md"
@@ -48,7 +53,7 @@ def run_new(args):
         return 1
 
     today = datetime.date.today().isoformat()
-    note_id = __import__("uuid").uuid4().hex[:8]
+    note_id = uuid.uuid4().hex[:8]
 
     fm = {
         "id": note_id,
@@ -69,13 +74,21 @@ def run_new(args):
     content += f"# {title}\n\n"
 
     tmp_path = target_path.with_suffix(".tmp")
-    tmp_path.write_text(content, encoding="utf-8")
-    tmp_path.rename(target_path)
+    try:
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.rename(target_path)
+    except OSError as exc:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            print(f"warning: could not remove partial file {tmp_path}", file=sys.stderr)
+        raise CairnError(f"could not write {target_path}: {exc}") from exc
 
     commit_result = commit_paths([target_path], vault_path, f"cairn new: {title}")
     if commit_result.returncode != 0:
         print(f"error: commit failed. File written to {target_path}.", file=sys.stderr)
-        print(commit_result.stderr, file=sys.stderr)
+        detail = (commit_result.stderr or "").strip() or (commit_result.stdout or "").strip()
+        print(detail or f"git exited {commit_result.returncode}", file=sys.stderr)
         return 1
 
     return 0
