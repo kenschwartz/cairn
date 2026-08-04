@@ -8,9 +8,7 @@ def _template_path(name: str) -> Path:
 
 def render_pre_commit(scan_source: str) -> str:
     template = _template_path("pre_commit.py.tmpl").read_text()
-    if scan_source.endswith("\n"):
-        scan_source = scan_source[:-1]
-    return template.replace("{{SCAN_SOURCE}}", scan_source)
+    return template.replace("{{SCAN_SOURCE}}\n", scan_source)
 
 
 def render_pre_push(allowlist: list[str]) -> str:

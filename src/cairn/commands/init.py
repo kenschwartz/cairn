@@ -5,18 +5,7 @@ from pathlib import Path
 from cairn import vault
 from cairn.hooks import render
 from cairn.gitadapter import run_git
-
-DEFAULT_ALLOWLIST = [
-    "https://github.com/CFG-INNERSOURCE/",
-    "git@github.com:CFG-INNERSOURCE/",
-]
-
-
-def get_allowlist():
-    env = os.environ.get("CAIRN_ALLOWED_REMOTE_PREFIXES")
-    if env:
-        return [p.strip() for p in env.split(",") if p.strip()]
-    return DEFAULT_ALLOWLIST[:]
+from cairn.config import get_allowlist
 
 
 def check_remotes(vault_path: Path, allowlist: list[str]):

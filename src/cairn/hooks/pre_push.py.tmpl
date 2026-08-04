@@ -12,12 +12,6 @@ def main():
         print("cairn pre-push hook requires Python 3.8+", file=sys.stderr)
         sys.exit(1)
 
-    env_override = os.environ.get("CAIRN_ALLOWED_REMOTE_PREFIXES")
-    if env_override:
-        allowlist = [p.strip() for p in env_override.split(",") if p.strip()]
-    else:
-        allowlist = ALLOWLIST
-
     remote_name = sys.argv[1] if len(sys.argv) > 1 else ""
     remote_url = sys.argv[2] if len(sys.argv) > 2 else ""
 
@@ -30,7 +24,7 @@ def main():
         if result.returncode == 0:
             remote_url = result.stdout.strip()
 
-    allowed = any(remote_url.startswith(prefix) for prefix in allowlist)
+    allowed = any(remote_url.startswith(prefix) for prefix in ALLOWLIST)
     if not allowed:
         print(
             f"cairn: remote URL not in allowlist: {remote_url}",

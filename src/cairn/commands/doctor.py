@@ -7,7 +7,8 @@ from pathlib import Path
 
 import cairn.scan as scan_mod
 from cairn.hooks import render
-from cairn.commands.init import DEFAULT_ALLOWLIST, get_allowlist, check_remotes
+from cairn.config import get_allowlist
+from cairn.commands.init import check_remotes
 
 
 def _git_version_ok():
@@ -115,22 +116,18 @@ def _history_scan(vault_path: Path, depth: int):
 def run_doctor(args):
     vault_path = Path.cwd().resolve()
     messages = []
-    hard_fail = False
 
-    py_ok = sys.version_info >= (3, 11)
-    messages.append(f"Python version: {sys.version_info.major}.{sys.version_info.minor} {'OK' if py_ok else 'FAIL'}")
-    if not py_ok:
-        hard_fail = True
+    py_fail = sys.version_info < (3, 11)
+    messages.append(
+        f"Python version: {sys.version_info.major}.{sys.version_info.minor} "
+        f"{'OK' if not py_fail else 'FAIL'}"
+    )
 
-    yaml_ok = _pyyaml_ok()
-    messages.append(f"PyYAML: {'OK' if yaml_ok else 'FAIL'}")
-    if not yaml_ok:
-        hard_fail = True
+    yaml_fail = not _pyyaml_ok()
+    messages.append(f"PyYAML: {'OK' if not yaml_fail else 'FAIL'}")
 
-    git_ok = _git_version_ok()
-    messages.append(f"git: {'OK' if git_ok else 'FAIL'}")
-    if not git_ok:
-        hard_fail = True
+    git_fail = not _git_version_ok()
+    messages.append(f"git: {'OK' if not git_fail else 'FAIL'}")
 
     email_result = subprocess.run(
         ["git", "config", "user.email"],
@@ -140,17 +137,27 @@ def run_doctor(args):
         env=os.environ.copy(),
     )
     email = email_result.stdout.strip()
+    email_fail = not email
     if email:
         messages.append(f"git user.email: {email} OK")
     else:
         messages.append("git user.email: not set FAIL")
-        hard_fail = True
 
-    if _is_git_repo(vault_path):
-        messages.append("vault is git repo: OK")
-    else:
-        messages.append("vault is git repo: FAIL")
-        hard_fail = True
+    repo_fail = not _is_git_repo(vault_path)
+    messages.append("vault is git repo: OK" if not repo_fail else "vault is git repo: FAIL")
+
+    hookspath_result = subprocess.run(
+        ["git", "config", "--get", "core.hooksPath"],
+        capture_output=True,
+        text=True,
+        cwd=str(vault_path),
+        env=os.environ.copy(),
+    )
+    hookspath_fail = False
+    if hookspath_result.returncode == 0 and hookspath_result.stdout.strip():
+        diverted = hookspath_result.stdout.strip()
+        messages.append(f"core.hooksPath diverted to {diverted} FAIL")
+        hookspath_fail = True
 
     allowlist = get_allowlist()
     scan_source = Path(scan_mod.__file__).read_text()
@@ -162,20 +169,21 @@ def run_doctor(args):
     pp_path = hooks_dir / "pre-push"
 
     pc_ok, pc_msg = _verify_hook(pc_path, expected_pre_commit)
+    pc_fail = not pc_ok
     if pc_ok:
         messages.append("pre-commit hook: OK")
     else:
         messages.append(f"pre-commit hook: {pc_msg} FAIL")
-        hard_fail = True
 
     pp_ok, pp_msg = _verify_hook(pp_path, expected_pre_push)
+    pp_fail = not pp_ok
     if pp_ok:
         messages.append("pre-push hook: OK")
     else:
         messages.append(f"pre-push hook: {pp_msg} FAIL")
-        hard_fail = True
 
     remote_ok, remote_msg = check_remotes(vault_path, allowlist)
+    remote_fail = not remote_ok
     if remote_ok:
         if "warning" in remote_msg.lower():
             messages.append(f"remotes: {remote_msg}")
@@ -183,14 +191,17 @@ def run_doctor(args):
             messages.append("remotes: OK")
     else:
         messages.append(f"remotes: {remote_msg} FAIL")
-        hard_fail = True
 
     if _local_bin_on_path():
         messages.append("~/.local/bin on PATH: OK")
     else:
         messages.append("warning: ~/.local/bin is not on PATH")
 
-    depth = args.scan_history if hasattr(args, "scan_history") and args.scan_history is not None else 20
+    depth = (
+        args.scan_history
+        if hasattr(args, "scan_history") and args.scan_history is not None
+        else 20
+    )
     history_findings = _history_scan(vault_path, depth)
     if history_findings:
         messages.append(
@@ -199,21 +210,35 @@ def run_doctor(args):
         for f in history_findings[:5]:
             messages.append(f"  {f.rule}: {f.path}:{f.line} {f.excerpt}")
 
-    if args.fix and (not pc_ok or not pp_ok):
+    if args.fix and (pc_fail or pp_fail):
         hooks_dir.mkdir(parents=True, exist_ok=True)
         pc_path.write_text(expected_pre_commit)
         pc_path.chmod(0o755)
         pp_path.write_text(expected_pre_push)
         pp_path.chmod(0o755)
         messages.append("--fix: reinstalled hooks")
-        # Re-verify after fix
         pc_ok, _ = _verify_hook(pc_path, expected_pre_commit)
         pp_ok, _ = _verify_hook(pp_path, expected_pre_push)
-        if pc_ok and pp_ok:
-            hard_fail = False
+        pc_fail = not pc_ok
+        pp_fail = not pp_ok
+        if not pc_fail and not pp_fail:
             for i, msg in enumerate(messages):
                 if "hook:" in msg and "FAIL" in msg:
                     messages[i] = msg.replace("FAIL", "FIXED")
+
+    hard_fail = any(
+        [
+            py_fail,
+            yaml_fail,
+            git_fail,
+            email_fail,
+            repo_fail,
+            hookspath_fail,
+            pc_fail,
+            pp_fail,
+            remote_fail,
+        ]
+    )
 
     for msg in messages:
         print(msg)
