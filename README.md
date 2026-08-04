@@ -17,15 +17,16 @@ Named for the stacked-stone trail marker. Notes as cairns you build yourself.
 
 ## What it is
 
-A [Python](https://www.python.org/) CLI, installed per-user with [pipx](https://pipx.pypa.io/)
-and no admin rights, managing a folder of Markdown notes:
+A [Python](https://www.python.org/) CLI, installed per-user with no admin rights via a public
+[Homebrew](https://brew.sh/) tap (co-primary) or [pipx](https://pipx.pypa.io/), with an offline
+bundle for locked-down networks. Manages a folder of Markdown notes:
 
 - Frontmatter-validated notes with a fixed type and status vocabulary
 - Fast capture into an inbox, and a todo-first dashboard
 - Wiki and relative-markdown links, with a link index and rename support
 - Tag and metadata search
 - Asset handling and local git auto-commit
-- A pre-commit secret and PII scan that runs before every auto-commit
+- A pre-commit credential and key-material scan (private keys, public keys, AWS keys, GitHub tokens, Anthropic keys) before every auto-commit; corporate GitHub scans server-side as backstop. v1 does not attempt PII detection.
 
 Full specification: [DESIGN.md](./DESIGN.md).
 
@@ -36,8 +37,10 @@ Cairn depends on anything at the bank, so there is no reason to develop it anywh
 tooling here is far better than the single assistant available on the work machine.
 
 **Deployed to** a locked-down corporate MacBook. That target is why the design insists on no admin
-rights, a working offline install path, and no dependency on Homebrew, pyenv, or Docker. Those
-constraints are real and they stay. They describe the deployment target, not this repository.
+rights and a working offline install path: the real constraints are no sudo and no assumption that
+PyPI or github.com is reachable. Homebrew is available there and is a co-primary install path; pipx
+and the offline bundle cover the rest. These constraints are real and they stay; they describe the
+deployment target, not this repository.
 
 ## What is NOT in this repository
 
@@ -46,9 +49,11 @@ tool. The vaults Cairn manages at work are a separate thing entirely and never c
 
 ## Status
 
-Design is complete and adversarially reviewed; no code yet. Phase 1 order is skeleton,
+Phase 1-3 are designed, adversarially reviewed, and build-ready; Phase 4 (tag mutation and
+listing) is deferred with open questions in [TODO.md](./TODO.md). No code yet. Phase 1 order is skeleton,
 `cairn init`, `cairn doctor`, content scan, `cairn new`, then auto-commit, with hooks and the scan
 landing before the first auto-commit. See the implementation phases in [DESIGN.md](./DESIGN.md).
 
-An open completeness pass on the design comes before Phase 1: testing documentation belongs in the
-design, and the prompts used to produce it should be captured alongside it.
+A completeness pass has run on the design (see [REVIEW.md](./REVIEW.md)): three Opus passes on
+2026-08-03. Testing documentation belongs in the design, and the prompts used to produce it are
+captured alongside it.

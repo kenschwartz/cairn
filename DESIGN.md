@@ -90,7 +90,7 @@ Version 1 is successful when Ken can:
 - **Cloud assistants are out of scope of the tooling's enforcement.** Copilot, Outlook, OneNote, and any other cloud-connected tool are not controlled by Cairn. Pasting note content into a cloud assistant is a separate, human risk decision: do not paste into Copilot anything you would not put in an email. "Nothing leaves the bank" is a guarantee about the vault tooling, not a guarantee about every tool Ken touches.
 - Assume the corporate Mac is subject to endpoint monitoring and that the corporate GitHub Enterprise repo is subject to admin review, audit, and retention. Treat everything written to the vault as observable by the employer.
 - Do not store customer PII, account numbers, credentials, MNPI, or any restricted data. These notes are personal working notes only.
-- A pre-commit content scan is required as defense in depth even though corporate GitHub also enforces server-side scanning. It is better to be blocked locally than to trip a security event. The scan covers **secret patterns and structured identifiers only** (private keys, AWS keys, high-entropy tokens, Luhn-valid card numbers, SSN patterns). Unstructured PII and MNPI (names, addresses, free text) cannot be caught by regex; those are governed by policy and by Ken, with server-side scanning as backstop. Do not imply the scan covers all PII.
+- A pre-commit content scan is required as defense in depth even though corporate GitHub also enforces server-side scanning. It is better to be blocked locally than to trip a security event. v1 scans credentials and key material only: private keys, public keys, SSH public-key lines, AWS key ids, GitHub tokens, and Anthropic API keys - all high-precision formats with effectively zero false positives. Card and SSN rules are dropped for this vault (Ken never has that data); generic unlabeled high-entropy-token detection, the suppression marker, and the bounded history scan are deferred to v2, with server-side scanning as backstop. Unstructured PII and MNPI (names, addresses, free text) cannot be caught by regex; those are governed by policy and by Ken, with server-side scanning as backstop. Do not imply the scan covers all PII.
 
 ## Security enforcement via git hooks
 
@@ -99,7 +99,7 @@ This is the most important section in the design. A control enforced only inside
 `cairn init` owns hook installation. No other component can, because the hooks must exist before the first commit and must survive clones. The hooks are:
 
 - **`.git/hooks/pre-commit`** (fires on every commit):
-  - Runs the content scan (secret patterns + structured identifiers) on the staged files.
+  - Runs the content scan (credentials and key material) on the staged files.
   - Checks that no staged file under `assets/` exceeds the size cap.
   - Verifies the `assets/local/` manifest: for every manifest entry, the on-disk file's SHA-256 must match the recorded hash. A mismatch (file replaced outside Cairn) fails the commit with a clear message.
 - **`.git/hooks/pre-push`** (fires on every push):
@@ -109,7 +109,7 @@ Properties the hook layer must satisfy:
 
 - Hooks are content-pinned. `cairn doctor` verifies that both hooks exist, are executable, and match a fresh in-memory re-render from the current package and config (by SHA-256). A missing, altered, or stale hook fails doctor. See "Hook mechanism" below for how the re-render works.
 - Hooks do not survive `git clone`. `cairn init` is idempotent and reinstalls hooks, so the documented first step on any fresh clone is `cairn init` (or `cairn doctor --fix`).
-- Hooks must not depend on the pipx venv being active at hook time. The pre-commit scan logic is invokable via `python3` against the vendored/third_party copy or the installed entry point; the hook resolves the interpreter the same way `cairn doctor` does.
+- Hooks must not depend on the install venv being active at hook time. The pre-commit hook inlines `scan.py` verbatim (see "Hook mechanism") under the static `#!/usr/bin/env python3` shebang, so it needs no interpreter resolution and no vendored third_party. (An earlier draft described resolving a vendored copy or the installed entry point; that was superseded by the inlining design.)
 - Hooks are local only and can be removed by a determined user with filesystem access. That is acknowledged: the hooks raise the bar and make accidents fail loudly, they are not a defense against deliberate circumvention by the repo owner. Server-side corporate GitHub scanning is the backstop for the residual risk.
 
 ### Hook mechanism (implementation contract)
@@ -139,7 +139,7 @@ Verbatim, at module level, not wrapped in a string. This avoids every quoting an
 def scan_bytes(data: bytes, path: str) -> list[Finding]
 ```
 
-`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str` (already masked). An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable.
+`Finding` is a dataclass with `rule: str`, `path: str`, `line: int`, `excerpt: str`. `excerpt` is masked INSIDE `scan_bytes` (see "Failure behaviour") so it never holds a full secret for any consumer. An empty list means clean. The function never raises for malformed input and never performs I/O, which keeps it trivially testable. v1 scope: the credential and key-material rules (private key, public key, SSH public key, AWS, GitHub token, Anthropic API key) plus the binary null-byte skip. The card, SSN, and entropy-token rules and the `cairn:allow-secret` suppression are not v1 and live inside scan_bytes when added (the hook inlines scan_bytes with no wrapper, so any scan behavior must live inside it).
 
 **No interpreter is substituted.** The shebang is the static line `#!/usr/bin/env python3`. This is a correction to an earlier draft of this section, which baked the resolved interpreter path into the hook at init time and broke content pinning: `sys.executable` changes on every `pipx upgrade`, so a re-render would mismatch the installed hook and `cairn doctor` would fail after every upgrade despite the hooks working fine. Removing the field is better than exempting it from the comparison, because it deletes the failure mode instead of carving out an exception.
 
@@ -157,47 +157,19 @@ This is safe on the target platform specifically: macOS with Xcode Command Line 
 
 So the preventive control is paired with a DETECTIVE one, and the detective control must FIRE ON ITS OWN:
 
-- `cairn doctor` runs a bounded history scan as part of its base checks: the working tree plus the last 20 commits, reported as a warning rather than a hard fail. `cairn doctor --scan-history N` widens the depth on demand.
+- (v2, deferred) `cairn doctor` will run a bounded history scan as part of its base checks: the working tree plus the last 20 commits, reported as a warning rather than a hard fail, with `cairn doctor --scan-history N` to widen depth. Deferred from v1 because corporate GitHub scans server-side and backstops a `--no-verify` bypass; the v1 scan is the staged-content pre-commit hook only.
 - Making it a base check rather than an opt-in flag is the whole point. A detective control nobody remembers to invoke is decorative, and `cairn doctor` already runs before write commands, so the accident case (a hurried `--no-verify` past an unrelated hook failure) surfaces on its own within one working session.
 
 ## Prerequisites and installation
 
-### The real constraint is NO ADMIN, not "no package manager"
-
-Corrected 2026-08-03 (Ken, verified on the machine). An earlier draft of this design assumed the work Mac had no Homebrew and treated that as a hard constraint. That was wrong and it was needlessly restrictive. **Homebrew IS installed on the deployment target and installs public packages fine.** The only installs that fail are ones that ask for `sudo`, and Ken has no admin rights.
-
-So the load-bearing invariant is precise: **nothing may require admin or `sudo`.** Homebrew already respects that, since a normal `brew install` is entirely user-space. Do not re-derive the stricter rule; it costs the cleanest install path for no benefit.
-
 ### Required on the Mac
 
-- **Python 3.11+**, provided by Xcode Command Line Tools or Homebrew. `python3 --version` must report 3.11 or later.
+- **Python 3.11+**, no admin required (`python3 --version` must report 3.11 or later). Verified 2026-08-03: the target work Mac runs Python 3.14.6, so the floor is met with headroom. NOTE: 3.14.6 is NOT from Xcode Command Line Tools (CLT ships Python 3.9); confirm the actual source on the work Mac (likely Homebrew or a python.org installer) and record it. A Homebrew Python is acceptable since brew needs no sudo; avoid pyenv or any interpreter that itself requires admin to install.
 - **git 2.30+**, provided by Xcode Command Line Tools.
-- **Homebrew**, present on the target. Available for the co-primary install path below.
-- **Not required:** admin rights, `sudo`, `git-lfs`, pyenv, virtualenvwrapper, Docker.
+- **PyPI reachable** from the corporate network for the user-scoped pipx install. If PyPI is blocked, the Homebrew path works ONLY if public github.com is also reachable (brew fetches the tap and release archive from github.com; locked bank networks that block pypi.org commonly block github.com too, so verify on the work Mac). If both are blocked, the offline bundle below is the only guaranteed path. Treat the offline path as co-primary, not rare.
+- **Not required:** `git-lfs`, admin rights, pyenv, virtualenvwrapper, Docker. Homebrew is not required either, but it IS available on the work Mac; the Homebrew install path below is co-primary with pipx.
 
-### Install paths, in preference order
-
-1. **Homebrew** (co-primary, cleanest, and the only one with a real upgrade story).
-2. **pipx**, when PyPI is reachable.
-3. **Offline zipapp**, when neither is.
-
-Two and three are FALLBACKS, not deprecated. Keep both working: a corporate network change can remove either of the first two without warning, and the offline path is the floor that always works.
-
-### Install via Homebrew (co-primary)
-
-```bash
-brew tap kenschwartz/<tap>
-brew install cairn
-cairn --version
-```
-
-The formula installs the `cairn` console entry point into Homebrew's prefix. No admin, no `sudo`, no writes to system directories, no `/Library/LaunchDaemons`. Updates are `brew upgrade cairn`, which is the thing neither other path gives cleanly.
-
-**Blocked precondition, and it gates this path entirely:** the tap and the release source must be reachable from the work Mac. The planned route is a public open-source repo, but `kenschwartz/cairn` is PRIVATE today, so **this path does not work yet**. Until the repo is public, pipx and the offline zipapp are the only functioning paths. The alternative is hosting the tap on the corporate CFG-INNERSOURCE GHE, which works but drags bank infrastructure into the loop; public is cleaner and keeps this project independent of the employer entirely.
-
-**Test the brew path HERE before relying on it there.** Build a local formula and `brew install --formula` from a scratch tap on the development Mac. The work Mac is not a debugging environment, and a broken formula discovered there costs a round trip measured in days.
-
-### Install path via pipx (fallback, needs PyPI)
+### Install path (per-user, no admin)
 
 The CLI is packaged as a normal Python distribution with a console entry point (`cairn = cairn.cli:main`) declared in `pyproject.toml`. Installation uses `pipx` so the CLI runs in an isolated virtualenv and its dependencies (PyYAML, and whatever else v1 pulls in) never pollute user site-packages.
 
@@ -212,6 +184,24 @@ cairn --version
 ```
 
 The `cairn` entry point ends up at `~/.local/bin/cairn`. Do not use `~/bin`; `~/.local/bin` is the standard `pipx` target.
+
+### Install via Homebrew (co-primary)
+
+Homebrew is available on the work Mac and installs public packages with **no sudo**, so a public Homebrew tap is the cleanest path and the one that gets updates for free (`brew upgrade cairn`). It is co-primary with pipx; pipx and the offline bundle remain as fallbacks for machines without brew or PyPI.
+
+```bash
+brew tap kenschwartz/cairn        # public tap repo: github.com/kenschwartz/homebrew-cairn
+brew install cairn
+cairn --version
+```
+
+**Prerequisites (both required, both tracked gates):**
+1. The tap and the release source are public so brew can fetch them. This gates on open-sourcing Cairn, a tracked pre-deploy step (see the open-source to-do in the vault Inbox), not an assumption; until the repo and a release archive are public, this path does not work and pipx/offline are the only functional paths.
+2. Public github.com is reachable from the work Mac. This is NOT guaranteed on a locked bank network (PyPI and github.com are often blocked together); verify before relying on brew as a PyPI fallback.
+
+**Rejected alternative (2026-08-03):** hosting the tap on the corporate CFG-INNERSOURCE GHE would remove prerequisite 1, but it drags bank infrastructure into a personal open-source project. A public tap keeps Cairn independent of the employer entirely, which is why open-sourcing is the chosen route.
+
+The formula builds from a public release archive, installs the `cairn` entry point into brew's prefix, performs no sudo steps, and the no-admin invariant is unchanged: no system daemon, no root, no writes outside user space.
 
 ### `cairn init`
 
@@ -236,17 +226,18 @@ The `cairn` entry point ends up at `~/.local/bin/cairn`. Do not use `~/bin`; `~/
 - `git config user.email` set (auto-commit fails without it).
 - Vault directory exists and is a git repo.
 - **Both git hooks present, mode `0o755`, and SHA-256-matching a fresh re-render** from the current package and config. A missing, non-executable, altered, or stale hook is a hard fail; `cairn doctor --fix` reinstalls them.
-- A bounded history scan (working tree plus the last 20 commits) reported as a warning, which is what catches a commit made with `--no-verify`.
+- (v2, deferred) A bounded history scan (working tree plus the last 20 commits) reported as a warning, which catches a commit made with `--no-verify`. Deferred from v1; server-side scanning backstops `--no-verify` until v2.
 - Remote policy: zero remotes is a **warning** (you cannot back up until you add one, but local-first use is allowed). One or more remotes: every remote URL must match the allowlist; any non-matching remote is a hard fail.
-- `~/.local/bin` on PATH.
+- The directory of the running `cairn` executable is on PATH (so hooks and sub-processes can invoke it). This is install-method agnostic: do NOT hardcode `~/.local/bin`, which is pipx-only and false-fails under brew (`$(brew --prefix)/bin`), the offline zipapp shim, a dev venv (`.venv/bin`), and hermetic tests where HOME is a temp dir.
 
 ### Offline install fallback
 
-If PyPI is unreachable from the corporate network, skip pipx entirely. The complete alternative is:
+If neither Homebrew nor PyPI is usable from the corporate network, skip both and install offline. The complete alternative is:
 
 1. Vendor PyYAML (and any other pure-Python dependencies) into `third_party/` inside the repo, committed.
-2. Build the CLI as a `zipapp` (`python3 -m zipapp`) or run directly from the repo with system Python and `PYTHONPATH` pointing at `third_party/`.
-3. Document the exact commands in the repo README.
+2. Build the CLI as a `zipapp` (`python3 -m zipapp`) producing `cairn.pyz`, or run directly from the repo with system Python and `PYTHONPATH` pointing at `third_party/`.
+3. Install a `cairn` shim on PATH. The zipapp alone is `cairn.pyz`, not the bare `cairn` command, so a one-line wrapper is required: place the `.pyz` at a stable path (e.g. `~/.local/share/cairn/cairn.pyz`) and write a shim at `~/.local/bin/cairn` whose body is `exec python3 "$HOME/.local/share/cairn/cairn.pyz" "$@"` under a `#!/bin/sh` shebang, then `chmod +x` it. The executable now resolves under the install-method-agnostic PATH check (see `cairn doctor`).
+4. Document the exact commands in the repo README.
 
 This is a standalone install path with no pipx and no network. Because many bank Macs block PyPI, test this path early; do not treat it as a rare edge case. See "Testing the offline install path": co-primary means there is a test, not just this paragraph.
 
@@ -262,12 +253,12 @@ pip install -e ".[dev]"
 pytest
 ```
 
+Once the public tap exists, the dev-to-deploy loop is: build here, push, tag a release, then `brew upgrade cairn` on the work Mac. No personal data crosses over (it is a public package install), and nothing from the work Mac ever comes back, so the loop touches no employer infrastructure and raises no security-policy question.
+
 Three rules that keep the two environments from contaminating each other:
 
 - **A dev-only dependency must never become a runtime dependency.** Runtime deps for v1 are PyYAML and nothing else, because every runtime dep has to survive the offline install. `pytest` and friends live in the `dev` extra only. A test asserting that `src/cairn/` imports nothing outside the standard library plus PyYAML enforces this.
-- **The deployment paths are tested here, not assumed.** The pipx install, the zipapp offline path, and the Homebrew formula are all exercised on this machine. The work Mac is not a debugging environment; anything that fails there costs a round trip measured in days.
-
-**The release loop, end to end (Ken, 2026-08-03):** build here on the home fleet, push, tag a release, then `brew upgrade cairn` on the work Mac. Nothing personal crosses to the work Mac and nothing from the work Mac comes back, so the loop touches no employer infrastructure and raises no security-policy question. That separation is the reason this shape was chosen over hosting the tap on corporate GHE.
+- **The deployment paths are tested here, not assumed.** Both the pipx install and the zipapp offline path are exercised by tests on this machine. The work Mac is not a debugging environment; anything that fails there costs a round trip measured in days.
 - **The remote allowlist must be overridable for tests, and defaults to empty.** A test vault has zero remotes, which `cairn doctor` treats as a warning rather than a failure, so the suite runs clean. Tests that exercise allowlist enforcement set the allowlist explicitly against a local bare repo. The allowlist is read from config at `cairn init` time and baked into the rendered pre-push hook; the test override goes through that same config path so the tests exercise the real mechanism.
 
 ## Architecture
@@ -447,7 +438,7 @@ Do not force a complete MOC taxonomy on day one. Create MOCs incrementally as no
 
 Tags are required on every note and tracked in a generated tag index.
 
-Tags are **normalized at write time**: lowercased, with runs of whitespace collapsed to a single hyphen. `cairn new --tag "Trade Finance"` writes `trade-finance`. This makes search normalization a consistency check rather than a correction, and keeps tag rename/match behavior well-defined.
+Tags are **normalized at write time** following the slug rule (lowercase; every run of non-alphanumeric characters collapsed to a single hyphen) with one deliberate difference: the slash `/` is preserved so tag hierarchies work (`cfg/security`, `project/cairn`). So `cairn new --tag "Trade Finance"` writes `trade-finance`, `--tag "CFG/Security"` writes `cfg/security`, and `--tag "A & B"` writes `a-b`. The slash is the only non-alphanumeric a tag may contain. Filenames cannot contain a slash, which is why the slug rule (no slash) and the tag rule (slash preserved) differ on purpose. This makes search normalization a consistency check rather than a correction, and keeps tag rename/match behavior well-defined.
 
 New tags do not require confirmation during capture. That keeps capture fast. The CLI must provide cleanup commands so mistaken tags can be fixed later.
 
@@ -459,7 +450,7 @@ Required Phase 4 tag operations:
 - remove a tag from selected notes
 - regenerate the tag index
 
-The exact Phase 4 command surface, `indexes/tags.md` format, tag normalization, mutation semantics, and multi-file write safety rules are not decided yet. `T004-implementation` is blocked until the `Q004-*` decisions in `TODO.md` are resolved and this section is updated with the accepted rules.
+The exact Phase 4 command surface, `indexes/tags.md` format, tag mutation semantics, and multi-file write safety rules are not decided yet. Tag NORMALIZATION at write time IS decided (the slug-plus-slash rule, see Tags) and ships in Phase 1; only the Phase 4 mutation and listing commands and the `indexes/tags.md` format remain open, tracked as `Q004-*` in [TODO.md](./TODO.md). `T004-implementation` is blocked until those resolve. Phase 4 is honestly DEFERRED - it is not part of the current build-ready scope (Phase 1-3).
 
 ## Todos
 
@@ -530,7 +521,7 @@ Input sources: positional string, `--file <path>`, or stdin. Multi-line paste fr
 Both `cairn new` and `cairn capture` derive the filename from the title using the same slug rule:
 
 - lowercase
-- transliterate accented characters where possible (for example e-acute to e), then drop anything that cannot be transliterated
+- transliterate via `unicodedata.normalize("NFKD", s)` then drop combining marks (characters whose `unicodedata.category()` is `Mn`); this turns e-acute into e and ñ into n. Characters that do not decompose and have no combining form (ß, CJK, emoji) are KEPT as-is rather than dropped, so the slug keeps its meaning and stays unique (dropping them would lose information and risk collisions)
 - replace every run of non-alphanumeric characters with a single hyphen
 - trim leading and trailing hyphens
 - cap at 60 characters
@@ -674,7 +665,7 @@ Search semantics:
   - `--project project-name`
 - Multiple filters are combined with `AND`.
 - Multiple `--tag` values require all listed tags to be present.
-- Tag, type, status, and project comparisons should normalize surrounding whitespace and case.
+- Tag comparisons run through the SAME normalizer tags are written with (lowercase; non-alphanumeric runs collapsed to a hyphen; slash preserved) so a query matches the stored form exactly - for example `--tag "CFG/Security"` matches a stored `cfg/security`. Type, status, and project comparisons normalize surrounding whitespace and case.
 - Search results should show path, title, type, status, project, tags, and a short matching excerpt when available.
 - **Malformed-file semantics (decided):** frontmatter filters never match a malformed file (it is excluded by any `--tag`/`--type`/`--status`/`--project` filter). A text query can still match a malformed file's body, and when it does the result carries a warning marker. The text query and the frontmatter filters combine with AND at the result level: a malformed file can appear only via a text match, never via a filter, and always flagged.
 
@@ -727,6 +718,8 @@ allowed_prefixes = [
 
 Any remote URL not matching an allowed prefix is rejected by the pre-push hook. Use `cairn remote add <url>` (accepts only allowed URLs) so the user never touches `git remote` directly. If Citizens later provides a better-scoped organization or host, update this allowlist, the hook, and the implementation together.
 
+**Config source:** the allowlist lives at `~/.config/cairn/config.toml` under `[remote] allowed_prefixes`, per-user (not per-vault). When the file or key is absent, it defaults to the two CFG-INNERSOURCE prefixes above. `cairn init` reads it and bakes the resolved list into the rendered pre-push hook; tests override it through that same config path. **Editing the allowlist requires re-baking the hook:** the baked list is a snapshot, so after editing config the user runs `cairn init` (or `cairn doctor --fix`) to re-render the pre-push hook. `cairn doctor` compares the installed hook against a fresh render from current config and FAILS LOUDLY when they diverge, so a stale baked list cannot silently persist. The fail direction to watch: tightening config without re-baking leaves the hook enforcing the old, looser list - doctor's drift check catches it before the next push, which is why the check is a hard fail, not a warning.
+
 ### Visibility tradeoff (documented decision)
 
 `CFG-INNERSOURCE` is an innersource organization. Even for a repository marked Private, org admins and org-wide tooling may have visibility into repository contents for governance purposes, and org-level discovery mechanisms exist. The vault contains personal working notes; this location was chosen for v1 because no more-scoped alternative is currently available. If Citizens later provides a personal or sandbox org, migrate the repo there and update `allowed_prefixes` accordingly.
@@ -765,18 +758,24 @@ This keeps auto-commit useful without silently bundling unrelated user edits or 
 
 Before each auto-commit, the CLI runs a local content scan on the files it is about to commit. The same scan also runs from the `.git/hooks/pre-commit` hook on every commit, so raw `git commit` and Copilot-assisted commits are scanned too. This is defense in depth; corporate GitHub Enterprise also scans server-side, but blocking locally avoids tripping security events.
 
+**v1 scope (decided 2026-08-03, "go lighter", broadened to credentials):** v1 ships high-precision credential and key-material detection: private keys, public keys (PEM block and SSH public-key line), AWS key ids, GitHub tokens, and Anthropic API keys, plus binary-skip and block-on-fail. All are unambiguous formats with effectively zero false positives, so v1 still needs no suppression marker and cannot block a legitimate commit. (Public keys are not secret; blocking them is a cleanliness policy of no key material in notes. If a public-key row ever blocks a legitimate SSH-setup note, disable it by removing the rule from `src/cairn/scan.py` and re-running `cairn init` so the inlined hook re-renders; `cairn doctor` then pins the reduced rule set.) The payment-card and SSN rules are DROPPED for this vault (Ken never has card or SSN data and would never note it; patterns stay documented below as optional for users who do). The labelled-high-entropy-token rule (generic unlabeled tokens), its entropy gate, the `cairn:allow-secret` suppression marker, and the bounded history scan are DEFERRED to v2. Corporate GitHub Enterprise scans server-side and backstops the deferred and dropped classes until v2.
+
 ### Scan input
 
-The scan reads the **full staged content** of each staged file (`git show :<path>`), not the diff hunks. Scanning hunks would miss a secret that sits in unchanged context in a file being committed for the first time. Files whose staged content contains a null byte in the first 8192 bytes are treated as binary and skipped. Everything under `.git/` is out of scope by construction.
+The scan reads the **full staged content** of each staged file (`git show :<path>`), not the diff hunks. Scanning hunks would miss a secret that sits in unchanged context in a file being committed for the first time. Files whose staged content contains a null byte in the first 8192 bytes are treated as binary and skipped; the null-byte check runs inside `scan_bytes` (part of the contract), not as a separate file-level filter. Everything under `.git/` is out of scope by construction.
 
-### Scan rules (version 1, exact)
+### Scan rules
 
-These are the patterns, not a description of them. An implementation must ship these and no fewer; the test suite pins each one with a positive and a negative case.
+v1 ships the high-precision credential and key-material rules - the first six table rows (private key, AWS key id, public key block, SSH public key line, GitHub token, Anthropic API key): an implementation ships these and no fewer, and the test suite pins each with a positive and a negative case. All are unambiguous formats with effectively zero false positives. The **labelled-high-entropy-token** row and its entropy gate are v2 (specified here so v2 is add-not-design). The **payment-card** and **SSN** rows are dropped for this vault (Ken never has that data; optional for users who do).
 
 | Rule | Pattern | Notes |
 | --- | --- | --- |
-| Private key block | `-----BEGIN (?:RSA \|EC \|DSA \|OPENSSH \|PGP )?PRIVATE KEY-----` | Highest confidence, effectively zero false positives |
+| Private key block | `-----BEGIN (?:RSA \|EC \|DSA \|OPENSSH \|PGP )?(?:ENCRYPTED )?PRIVATE KEY-----` | Highest confidence, effectively zero false positives. Also catches the key inside a GCP service-account JSON |
 | AWS access key id | `\b(?:AKIA\|ASIA\|AGPA\|AIDA\|AROA\|AIPA\|ANPA\|ANVA\|ABIA)[0-9A-Z]{16}\b` | The documented AWS key-id prefixes |
+| Public key block | `-----BEGIN (?:.* )?PUBLIC KEY-----` | Public keys are NOT secret; blocking is a cleanliness policy (no key material in notes). Drop this row if it ever blocks a legitimate SSH-setup note |
+| SSH public key line | `^(?:ssh-rsa\|ssh-dss\|ssh-ed25519\|ecdsa-sha2-[a-z0-9-]+\|sk-[a-z0-9-]+)(?:@[a-z0-9.-]+)?\s+[A-Za-z0-9+/=]{40,}` | authorized_keys / id_*.pub format, including FIDO security-key types (`sk-ssh-ed25519@openssh.com`). Same cleanliness rationale |
+| GitHub token | `gh[opsru]_[A-Za-z0-9]{36}` | PAT and friends; precise prefix, zero false positives |
+| Anthropic API key | `sk-ant-api[A-Za-z0-9_-]{20,}` | Anthropic `sk-ant-api...` tokens |
 | Labelled high-entropy token | `(?i)\b(?:secret\|token\|api[_-]?key\|apikey\|password\|passwd\|access[_-]?key)\b\s*[:=]\s*["']?([A-Za-z0-9+/=_\-]{32,})` | Capture group 1 must ALSO clear the entropy gate below |
 | Payment card | 13-19 digit run after stripping spaces and hyphens, passing the Luhn checksum | See false-positive rule below |
 | US SSN | `\b\d{3}-\d{2}-\d{4}\b` | Hyphenated form only; bare 9-digit runs are too noisy |
@@ -793,11 +792,11 @@ Know what this gate does and does not buy. At 3.0 bits per character roughly ten
 
 This escape hatch exists because a scanner with no way out gets disabled wholesale the first time it blocks something legitimate, which is a far worse outcome than a reviewable exception. Suppressions are visible in the diff, and `cairn validate` reports a count of them in the vault so they cannot accumulate silently.
 
-**Failure behaviour.** Failure exits non-zero and prints, for each finding, the rule name, the file path, the line number, and the matched text truncated to 12 characters with the remainder masked. Never print the full matched secret: the hook output can land in a terminal scrollback, a CI log, or a screenshot. The write to disk still happened; the commit did not. The user resolves by editing and rerunning.
+**Failure behaviour.** Failure exits non-zero and prints, for each finding, the rule name, the file path, the line number, and a masked excerpt. Masking happens INSIDE `scan_bytes`, so `Finding.excerpt` is safe for every consumer (hook output, `cairn validate`, tests), never holding the full match. The rule: for a match of 1 or 2 characters, emit only a fixed placeholder (`[...]`) and no real characters; for a match of 3 to 8 characters, emit only its first and last character with the middle replaced by `[...]`; for a longer match, emit first-4 + `[...]` + last-4. The full secret is never printed, even for short values, because hook output can land in terminal scrollback, a CI log, or a screenshot. The write to disk still happened; the commit did not. The user resolves by editing and rerunning.
 
 Scope and limits:
 
-- The scan covers secret patterns and structured identifiers only. It does **not** detect unstructured PII (names, addresses), free-text MNPI, or employer-specific reference formats. Those are governed by policy and by Ken; server-side corporate scanning is the backstop.
+- The scan covers credentials and key material only (private keys, public keys, AWS keys, GitHub tokens, Anthropic keys). It does **not** detect unstructured PII (names, addresses), free-text MNPI, or employer-specific reference formats. Those are governed by policy and by Ken; server-side corporate scanning is the backstop.
 - Scan implementation should be a small set of regexes shipped with the CLI and embedded in the hook. No third-party service, no network calls.
 
 ```text
@@ -891,18 +890,18 @@ Required integration tests:
 5. Delete `.git/hooks/pre-commit`; assert doctor fails and `--fix` reinstalls.
 6. Render both hooks and assert the inlined scan source is byte-identical to `src/cairn/scan.py`.
 7. Import `src/cairn/scan.py` with the rest of the package removed from `sys.path` and assert it imports and runs. This enforces the stdlib-only constraint the whole hook design rests on.
-8. Run a commit with `--no-verify` containing a secret, assert it succeeds (documenting the known hole), then assert `cairn doctor --scan-history` reports it.
+8. Run a commit with `--no-verify` containing a secret, assert it succeeds (documenting the known hole). (v2 addendum: once the bounded history scan lands, also assert `cairn doctor --scan-history` reports it - the `--scan-history` half is NOT a Phase 1 test.)
 
 ### Testing the scanner
 
-Fixtures live in `tests/fixtures/secrets/` and are **synthetic values that match the patterns without being live credentials**: an `AKIA` prefix followed by sixteen arbitrary uppercase characters, the industry test card number `4111111111111111`, an SSN-shaped `000-00-0000`, a generated PEM header with non-key body text. Never commit a real credential to test a secret scanner.
+Fixtures live in `tests/fixtures/secrets/` and are **synthetic values that match the patterns without being live credentials**: an `AKIA` prefix followed by sixteen arbitrary uppercase characters; a generated PEM `PRIVATE KEY` header with non-key body text; a generated PEM `PUBLIC KEY` header; an `ssh-ed25519` line with synthetic base64; a `ghp_` token with 36 random base62 chars; an `sk-ant-api` token with a synthetic continuation. (Card and SSN fixtures are removed - those rules are dropped for this vault.) Never commit a real credential to test a secret scanner.
 
 Both directions are required for every rule, per the positive/negative discipline this project already uses elsewhere:
 
 - **Positive:** the rule fires on its fixture.
-- **Negative:** the rule does NOT fire on a near-miss (`AKIA` followed by fifteen characters; a 16-digit run that fails Luhn).
-- **Entropy threshold pinned from both sides**, so a future tweak to the constant breaks a test rather than silently weakening the scan. The below-gate fixture must be **long enough to reach the gate**: use `token: abcabcabcabcabcabcabcabcabcabcabcab` (35 characters, three distinct symbols, entropy 1.58). A shorter string is rejected by the `{32,}` length rule before the entropy code ever executes, so it would pass the test while proving nothing about the gate. That trap is not hypothetical: the first draft of this section used a 29-character fixture whose entropy was also 3.11, so it failed the length rule AND would have cleared the gate, and the test would have been green and meaningless in both directions.
-- **Suppression:** `cairn:allow-secret` on the line suppresses; on the adjacent line it does not.
+- **Negative:** the rule does NOT fire on a near-miss (`AKIA` followed by fifteen characters; an `ssh-ed25519` line with under 40 chars of base64; a `ghp_` token with fewer than 36 trailing chars).
+- **(v2) Entropy threshold pinned from both sides**, so a future tweak to the constant breaks a test rather than silently weakening the scan. The below-gate fixture must be **long enough to reach the gate**: use `token: abcabcabcabcabcabcabcabcabcabcabcab` (35 characters, three distinct symbols, entropy 1.58). A shorter string is rejected by the `{32,}` length rule before the entropy code ever executes, so it would pass the test while proving nothing about the gate. That trap is not hypothetical: the first draft of this section used a 29-character fixture whose entropy was also 3.11, so it failed the length rule AND would have cleared the gate, and the test would have been green and meaningless in both directions. This test is v2 (the entropy rule and gate are deferred); do NOT build it in Phase 1.
+- **(v2) Suppression:** `cairn:allow-secret` on the line suppresses; on the adjacent line it does not. v2 (suppression is deferred); do NOT build in Phase 1.
 - **Masking:** assert the finding output does not contain the full matched string.
 
 ### Testing determinism
@@ -913,6 +912,8 @@ Both directions are required for every rule, per the positive/negative disciplin
 ### Testing the offline install path
 
 The design states the offline path is co-primary because many bank Macs block PyPI. Co-primary means tested, not documented: a test builds the zipapp and runs `cairn --version` from it with no network and no pipx. A documented fallback that has never been executed is not a fallback.
+
+The Homebrew path makes the same co-primary claim and carries the same obligation. A full brew test needs a published tap, so it is a manual pre-release integration gate rather than a unit test in this suite: build the formula locally (`brew install --formula ./cairn.rb` from a scratch tap), run `cairn --version`, and confirm `cairn doctor` passes with the executable at `$(brew --prefix)/bin`. Until the tap exists this is a documented manual gate, not an automated test.
 
 ### No skipped tests
 
@@ -987,4 +988,4 @@ The scan and hooks must exist before the first auto-commit, so Phase 1 lands the
 
 ## Adversarial review workflow
 
-Each new implementation phase requires an adversarial review gate before implementation. Use the current workflow in `working-agreement.md`: review `DESIGN.md`, `decisions.md`, `TODO.md`, current implementation, and relevant tests; convert only current blockers or required Ken decisions into `TODO.md`; keep long review transcripts out of working documents. This design itself passed a cross-family adversarial review on 2026-07-24 (verdict DESIGN-FIX-FIRST, fixes applied); see `REVIEW.md`.
+Each new implementation phase requires an adversarial review gate before implementation: review `DESIGN.md`, `REVIEW.md`, `TODO.md`, the current implementation, and relevant tests; convert only current blockers or required Ken decisions into `TODO.md`; keep long review transcripts out of working documents. The 2026-07-24 review's `decisions.md` and `working-agreement.md` were lost in a `/tmp` wipe before this repo stood up; their decisions are integrated into DESIGN.md and the per-finding rationale is gone. This design passed a cross-family adversarial review on 2026-07-24 (verdict DESIGN-FIX-FIRST, fixes applied) plus three Opus completeness passes on 2026-08-03, all logged in `REVIEW.md`.
