@@ -21,8 +21,10 @@ alongside the rest of the `cairn doctor` coverage.
 
 import hashlib
 import os
+import shutil
 import stat
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -40,6 +42,74 @@ def run(cmd, cwd=None, extra_env=None):
 
 def git(args, cwd, extra_env=None):
     return run(["git"] + args, cwd=cwd, extra_env=extra_env)
+
+
+def make_failing_git_stub(tmp_path_factory, fail_subcommand: str) -> Path:
+    """
+    Build a directory containing a `git` script that transparently execs
+    the REAL git for every subcommand EXCEPT `fail_subcommand`, which it
+    fails immediately with a distinctive nonzero exit and stderr message.
+    This is a genuine subprocess-level fault injection -- not a mock of
+    the hook, not a monkeypatch of scan_bytes. The hook under test still
+    runs as a real subprocess and really shells out to `git`; only that
+    one specific git subcommand is made to fail.
+
+    Mechanism note (verified by hand, not assumed): a plain PATH-prepend
+    is NOT sufficient to intercept a hook's internal `git` calls, because
+    git itself prepends its own git-core exec directory to PATH before
+    invoking hooks (confirmed by dumping $PATH from inside a hand-written
+    test hook: the real git-core path appears ahead of anything the
+    invoking shell had on PATH). Setting GIT_EXEC_PATH to this stub
+    directory (in addition to prepending it to PATH) is what makes git
+    place the stub ahead of its own git-core directory, so the hook's
+    internal `subprocess.run(["git", ...])` calls actually resolve to the
+    stub. Callers must pass BOTH `GIT_EXEC_PATH` and a PATH with this
+    directory prepended as extra_env on the outer `git` invocation that
+    triggers the hook.
+    """
+    real_git = shutil.which("git")
+    assert real_git, "setup: a real git must be resolvable on PATH to build the stub"
+    stub_dir = tmp_path_factory.mktemp("git_stub")
+    stub = stub_dir / "git"
+    stub.write_text(textwrap.dedent(f"""\
+        #!/bin/sh
+        if [ "$1" = "{fail_subcommand}" ]; then
+            echo "INJECTED-TEST-FAILURE: {fail_subcommand} stubbed to fail" >&2
+            exit 111
+        fi
+        exec "{real_git}" "$@"
+        """))
+    stub.chmod(0o755)
+    return stub_dir
+
+
+def stub_env(stub_dir: Path) -> dict:
+    """extra_env that makes git prefer the stub over its own git-core."""
+    return {
+        "GIT_EXEC_PATH": str(stub_dir),
+        "PATH": f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+
+
+def write_allowlist_config(config_home: Path, prefixes) -> None:
+    """
+    Write a minimal `<config_home>/cairn/config.toml` with a [remote]
+    allowed_prefixes list, matching DESIGN.md's config source exactly:
+    '~/.config/cairn/config.toml' under '[remote] allowed_prefixes', with
+    the '~/.config' segment resolved via $XDG_CONFIG_HOME when set --
+    'which is also the seam the test suite uses to inject a temporary
+    config; the runtime environment carries no allowlist values of its
+    own.' Callers point XDG_CONFIG_HOME at config_home for the `cairn
+    init` call only, so the allowlist is baked at render time through the
+    real config path, never through an environment variable.
+    """
+    cairn_dir = config_home / "cairn"
+    cairn_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["[remote]", "allowed_prefixes = ["]
+    for p in prefixes:
+        lines.append(f'  "{p}",')
+    lines.append("]")
+    (cairn_dir / "config.toml").write_text("\n".join(lines) + "\n")
 
 
 def stage_and_commit(vault: Path, filename: str, content: str,
@@ -74,6 +144,7 @@ class TestHookBlocksSecret:
     AWS_SYNTHETIC = "AKIAIOSFODNN7EXAMPLE"
     PRIVATE_KEY_SYNTHETIC = "-----BEGIN RSA PRIVATE KEY-----\nFAKE KEY BODY FOR TEST\n-----END RSA PRIVATE KEY-----\n"
     GITHUB_TOKEN_SYNTHETIC = "ghp_" + ("EXAMPLE0" * 4) + "EXAM"
+    ANTHROPIC_KEY_SYNTHETIC = "sk-ant-api03-EXAMPLE0000000000"
 
     def test_aws_key_blocks_commit(self, tmp_vault):
         before = commit_count(tmp_vault)
@@ -145,6 +216,33 @@ class TestHookBlocksSecret:
             f"Got: {combined!r}"
         )
 
+    def test_anthropic_key_blocks_commit(self, tmp_vault):
+        """
+        (spec-QA review, RAISE, accepted): mirrors test_github_token_blocks_commit
+        for the other v1 rule the old gate lacked. Verified by hand first
+        (not assumed): `scan_bytes(b"key = sk-ant-api03-EXAMPLE0000000000",
+        "f.md")` returns `[]` against the current scan.py -- no rule fires
+        at all for this line today (not even the stale labelled_token
+        rule, since a bare 'key' label is not one of its recognized
+        labels), so this is a clean red proof with no wrong-reason-pass
+        risk.
+        """
+        before = commit_count(tmp_vault)
+        result = stage_and_commit(
+            tmp_vault, "anthropic_key.md",
+            f"# Note\n\nkey = {self.ANTHROPIC_KEY_SYNTHETIC}\n"
+        )
+        assert result.returncode != 0, (
+            "Commit containing synthetic Anthropic API key must be blocked by pre-commit hook"
+        )
+        assert commit_count(tmp_vault) == before
+        combined = result.stdout + result.stderr
+        assert "anthropic_api_key" in combined, (
+            f"Commit must be blocked specifically by the anthropic_api_key "
+            f"rule, not merely by some other rule that happens to also "
+            f"match. Got: {combined!r}"
+        )
+
     def test_finding_output_does_not_contain_full_secret(self, tmp_vault):
         """
         DESIGN.md: 'Never print the full matched secret'.
@@ -211,11 +309,17 @@ class TestHookAllowsCleanCommit:
 # BLOCK 1 (Tier 0, docs/reviews/phase1-review-triage-2026-08-03.md): the
 # pre-push hook read CAIRN_ALLOWED_REMOTE_PREFIXES from the environment AT
 # PUSH TIME and let it fully replace the baked allowlist -- defeating
-# doctor's re-render-and-compare pinning. DESIGN.md's "Development
-# environment" section (fixed 2026-08-03): 'The allowlist is read from
-# config at cairn init time and baked into the rendered pre-push hook;
-# tests override it through that same config path.' The override belongs
-# at cairn init / render time, not at push time.
+# doctor's re-render-and-compare pinning.
+#
+# DESIGN.md "Remote allowlist" / "Config source" (amended after a
+# spec-QA review, BLOCK, confirmed the earlier version of this section
+# was still wrong): 'the allowlist lives at ~/.config/cairn/config.toml
+# under [remote] allowed_prefixes ... The ~/.config segment is resolved
+# via $XDG_CONFIG_HOME when set (standard XDG behavior), which is also
+# the seam the test suite uses to inject a temporary config; the runtime
+# environment carries no allowlist values of its own.' The override
+# belongs in a CONFIG FILE read at cairn init (render) time -- not in any
+# environment variable, at init time OR push time.
 # ---------------------------------------------------------------------------
 
 class TestPrePushAllowlist:
@@ -242,48 +346,54 @@ class TestPrePushAllowlist:
     def test_push_to_allowlisted_remote_proceeds(self, tmp_path, tmp_path_factory):
         """
         A push to an allowlisted remote must succeed. The override happens
-        at cairn init (render) time, per DESIGN.md's config-at-init path --
-        NOT at push time. This bakes the bare repo's path into the
-        pre-push hook's ALLOWLIST constant, then pushes with a CLEAN
-        environment (no override at push time) to prove the baked value
-        alone is what authorizes the push.
+        at cairn init (render) time, through the CONFIG FILE, per
+        DESIGN.md's config source. This writes a temp config.toml naming
+        the bare repo's path under [remote] allowed_prefixes, points
+        XDG_CONFIG_HOME at it ONLY for the cairn init call (so the
+        allowlist gets baked into the pre-push hook through the real
+        config path), then pushes with a completely clean environment --
+        no XDG_CONFIG_HOME, no CAIRN_ALLOWED_REMOTE_PREFIXES anywhere --
+        to prove the baked value alone is what authorizes the push.
         """
         bare = tmp_path_factory.mktemp("bare_allow")
         subprocess.run(["git", "init", "--bare", str(bare)], check=True,
                        capture_output=True, env=os.environ.copy())
 
+        config_home = tmp_path_factory.mktemp("xdg_config_allow")
+        write_allowlist_config(config_home, [str(bare)])
+
         vault = tmp_path / "vault"
         vault.mkdir()
         init_result = run(
             ["cairn", "init", str(vault)],
-            extra_env={"CAIRN_ALLOWED_REMOTE_PREFIXES": str(bare)},
+            extra_env={"XDG_CONFIG_HOME": str(config_home)},
         )
         assert init_result.returncode == 0, (
-            f"setup: cairn init with the test allowlist must succeed.\n"
+            f"setup: cairn init with the test config.toml must succeed.\n"
             f"stderr: {init_result.stderr}"
         )
 
         git(["remote", "add", "allowed", str(bare)], cwd=vault)
         stage_and_commit(vault, "push_allow.md", "allow test\n")
 
-        # No env override at push time: the baked allowlist alone must allow this.
+        # No XDG_CONFIG_HOME, no env override at push time: the allowlist
+        # baked via config.toml at init time alone must allow this.
         result = git(["push", "allowed", "HEAD:refs/heads/main"], cwd=vault)
         assert result.returncode == 0, (
-            f"Push to a remote baked into the allowlist at cairn init time "
-            f"must succeed with no further override.\nstderr: {result.stderr}"
+            f"Push to a remote baked into the allowlist via config.toml at "
+            f"cairn init time must succeed with no further override.\n"
+            f"stderr: {result.stderr}"
         )
 
     def test_env_override_at_push_time_has_no_effect(self, tmp_vault, tmp_path_factory):
         """
         BLOCK 1 (Tier 0) negative control. tmp_vault was initialised with
-        the DEFAULT allowlist (no env override at init time), so its
-        pre-push hook has the CFG-INNERSOURCE prefixes baked in. Setting
-        CAIRN_ALLOWED_REMOTE_PREFIXES at PUSH time to a permissive value
-        must NOT change the rendered hook's behaviour: a rendered hook's
-        enforcement is immutable at runtime by design (see DESIGN.md
-        'Content pinning is re-render-and-compare, not a stored hash' --
-        an env override that bypasses the bake defeats the very thing that
-        comparison is meant to pin).
+        the DEFAULT allowlist (no config.toml, no env override at init
+        time), so its pre-push hook has the CFG-INNERSOURCE prefixes
+        baked in. Setting CAIRN_ALLOWED_REMOTE_PREFIXES at PUSH time to a
+        permissive value must NOT change the rendered hook's behaviour:
+        per DESIGN.md, 'the runtime environment carries no allowlist
+        values of its own' -- not at push time, not ever.
         """
         bare = tmp_path_factory.mktemp("bare_env_bypass")
         subprocess.run(["git", "init", "--bare", str(bare)], check=True,
@@ -300,7 +410,47 @@ class TestPrePushAllowlist:
             "Setting CAIRN_ALLOWED_REMOTE_PREFIXES at push time must NOT "
             "override the baked allowlist (BLOCK 1). The rendered hook's "
             "enforcement must not be alterable by an environment variable "
-            "at push time -- only by re-rendering via cairn init."
+            "at push time -- only by re-rendering via cairn init with a "
+            "different config.toml."
+        )
+
+    def test_env_override_at_init_time_has_no_effect(self, tmp_path, tmp_path_factory):
+        """
+        (spec-QA review, BLOCK, item 4 addition) The init-time negative
+        control DESIGN.md's config-source rewrite requires: 'the runtime
+        environment carries no allowlist values of its own.'
+        CAIRN_ALLOWED_REMOTE_PREFIXES set during `cairn init` must NOT
+        influence the baked allowlist at all -- only config.toml
+        (resolved via XDG_CONFIG_HOME) may. A vault initialised with the
+        env var set to a permissive value, and NO config.toml, must still
+        bake the DEFAULT (CFG-INNERSOURCE-only) allowlist, so a push to
+        the env-named remote must still be rejected.
+        """
+        bare = tmp_path_factory.mktemp("bare_init_env_bypass")
+        subprocess.run(["git", "init", "--bare", str(bare)], check=True,
+                       capture_output=True, env=os.environ.copy())
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        init_result = run(
+            ["cairn", "init", str(vault)],
+            extra_env={"CAIRN_ALLOWED_REMOTE_PREFIXES": str(bare)},
+        )
+        assert init_result.returncode == 0, (
+            f"setup: cairn init must succeed even with the env var set "
+            f"(it must simply be ignored, not error).\n"
+            f"stderr: {init_result.stderr}"
+        )
+
+        git(["remote", "add", "initenvbypass", str(bare)], cwd=vault)
+        stage_and_commit(vault, "init_env_bypass.md", "clean content\n")
+
+        result = git(["push", "initenvbypass", "HEAD:refs/heads/main"], cwd=vault)
+        assert result.returncode != 0, (
+            "CAIRN_ALLOWED_REMOTE_PREFIXES set during cairn init must NOT "
+            "influence the baked allowlist -- only config.toml may. The "
+            "push must still be rejected because no config.toml granted "
+            "this remote."
         )
 
 
@@ -520,20 +670,25 @@ class TestAssetSizeCap:
 
 
 # ---------------------------------------------------------------------------
-# RAISE fix: deleting an oversized asset must not be blocked by the size cap
-# (docs/reviews/phase1-review-triage-2026-08-03.md, "Worth fixing in the
-# same round"): 'git show :<path> on a staged deletion returns the OLD
-# blob, so the cap fires and the user cannot delete a large asset without
-# --no-verify. Needs a deletion carve-out via --diff-filter=D.'
+# RAISE fix, now also codified directly in DESIGN.md "Scan input" (amended):
+# 'Staged deletions are exempt from the scan and from the asset size cap:
+# a path staged for deletion (`git diff --cached --name-only
+# --diff-filter=D`) has no new content to scan, `git show :<path>` on it
+# raises, and blocking the deletion of an oversized asset would trap the
+# user with no way to remove it. The exemption is deletion-only; a read
+# failure on any path NOT staged for deletion stays fail-closed and blocks
+# the commit.' That last sentence is exactly what
+# TestFailClosedOnUnexpectedHookErrors (below) pins on the non-deletion
+# side.
 #
 # Reproduced by hand against the current pre-commit hook: get_staged_content
 # uses `git show :<path>` with check=True, and for a staged DELETION that
 # path no longer exists in the index at all, so git show exits 128 and the
 # hook CRASHES with an uncaught CalledProcessError (not merely "fires on
-# the old blob" as literally described) -- confirmed for BOTH an oversized
-# asset deletion and a plain clean-file deletion. The observable effect the
-# user sees is the same either way: a deletion commit that should succeed
-# is blocked. Both cases are pinned below.
+# the old blob" as originally described in the review triage) -- confirmed
+# for BOTH an oversized asset deletion and a plain clean-file deletion. The
+# observable effect the user sees is the same either way: a deletion
+# commit that should succeed is blocked. Both cases are pinned below.
 # ---------------------------------------------------------------------------
 
 class TestAssetDeletionCarveOut:
@@ -582,4 +737,195 @@ class TestAssetDeletionCarveOut:
         assert "CalledProcessError" not in (result.stdout + result.stderr), (
             "The hook must not crash with an unhandled subprocess error on "
             "a staged deletion"
+        )
+
+
+# ---------------------------------------------------------------------------
+# (spec-QA review, convergent BLOCK): fail-closed on unexpected hook errors
+# was untested anywhere. DESIGN.md "Scan input" (amended): 'The exemption
+# is deletion-only; a read failure on any path NOT staged for deletion
+# stays fail-closed and blocks the commit.' These are real subprocess-level
+# injections via a PATH + GIT_EXEC_PATH-stubbed `git` (see
+# make_failing_git_stub above for why a plain PATH-prepend does not work)
+# -- NOT a mock of the hook itself. The stub transparently execs the real
+# git for every subcommand except the one under test, which it fails
+# immediately with a distinctive message.
+# ---------------------------------------------------------------------------
+
+class TestFailClosedOnUnexpectedHookErrors:
+    def test_pre_commit_blocks_when_internal_git_show_fails(self, tmp_vault, tmp_path_factory):
+        """
+        get_staged_content() in the rendered pre-commit hook shells out to
+        `git show :<path>` for every NON-deleted staged file's content.
+        If that call fails unexpectedly (stubbed here) on a path that is
+        NOT staged for deletion, the commit must be BLOCKED, not silently
+        treated as "no findings, proceed".
+
+        Currently GREEN: get_staged_content uses subprocess.run(...,
+        check=True), so a failed `git show` raises CalledProcessError,
+        which is uncaught, which crashes the hook with a nonzero exit --
+        git then aborts the commit (verified by hand with this exact
+        stub mechanism before writing this assertion; the crash surfaces
+        as a Python traceback ending in
+        'subprocess.CalledProcessError: ... git show ... returned
+        non-zero exit status 111', the injected code). This test WOULD
+        FAIL if a future change wrapped that call in a try/except that
+        swallowed the error and returned empty/no-findings instead of
+        re-raising or exiting non-zero -- a "fail open on error"
+        regression that DESIGN.md's amended "Scan input" section now
+        explicitly forbids outside the deletion carve-out.
+        """
+        stub_dir = make_failing_git_stub(tmp_path_factory, fail_subcommand="show")
+
+        (tmp_vault / "notes" / "inject_show.md").write_text("clean content, nothing to scan\n")
+        git(["add", "notes/inject_show.md"], cwd=tmp_vault)
+
+        before = commit_count(tmp_vault)
+        result = run(
+            ["git", "commit", "-m", "inject show failure"],
+            cwd=tmp_vault,
+            extra_env=stub_env(stub_dir),
+        )
+        assert result.returncode != 0, (
+            f"An unexpected internal git failure inside the pre-commit "
+            f"hook must BLOCK the commit, never wave it through.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert commit_count(tmp_vault) == before, (
+            "No commit must be created when the hook fails unexpectedly"
+        )
+
+    def test_pre_commit_injection_actually_reached_the_hook(self, tmp_vault, tmp_path_factory):
+        """
+        Guards against the injection silently no-op'ing (e.g. if a future
+        git version changes how it exposes git-core to hooks and the stub
+        stops being consulted): the DISTINCTIVE injected exit code (111,
+        not a code any real git error would coincidentally produce) must
+        appear in the crash output. Without this, a broken stub and a
+        genuinely fixed hook would look identical (both green).
+
+        FIXTURE VALIDATION CATCH: an earlier version of this test asserted
+        the stub's stderr TEXT ("INJECTED-TEST-FAILURE") appears in the
+        commit output, and that assertion was WRONG -- verified by hand.
+        get_staged_content calls `subprocess.run(..., capture_output=True,
+        check=True)` (no `text=True`); the stub's stderr IS captured into
+        the resulting CalledProcessError's `.stderr` attribute, but
+        nothing in the hook ever prints that attribute before the
+        exception propagates and Python's default traceback handler takes
+        over -- the traceback shows the command and exit code, not the
+        captured output. The actually-visible, actually-distinctive
+        signal is the exit code itself: the traceback ends with
+        'returned non-zero exit status 111'.
+        """
+        stub_dir = make_failing_git_stub(tmp_path_factory, fail_subcommand="show")
+        (tmp_vault / "notes" / "inject_show2.md").write_text("clean content\n")
+        git(["add", "notes/inject_show2.md"], cwd=tmp_vault)
+
+        result = run(
+            ["git", "commit", "-m", "inject show failure 2"],
+            cwd=tmp_vault,
+            extra_env=stub_env(stub_dir),
+        )
+        combined = result.stdout + result.stderr
+        assert "111" in combined, (
+            f"The stub's distinctive injected exit code (111) must "
+            f"actually reach the crash output; if it never appears, this "
+            f"test proves nothing about fail-closed behaviour (it might "
+            f"be passing because the commit failed for some unrelated "
+            f"reason). Got: {combined!r}"
+        )
+
+    def test_pre_push_reject_unaffected_by_internal_remote_lookup_failure(
+        self, tmp_vault, tmp_path_factory
+    ):
+        """
+        The rendered pre-push hook shells out to `git remote get-url
+        <name>` (no check=True) as a best-effort enrichment step ONLY
+        when the URL git already handed it as argv[2] doesn't look like a
+        URL (e.g. a local bare-repo filesystem path, which is exactly
+        what this test suite's local push targets are). Verified by hand:
+        stubbing `remote` to fail does NOT change the outcome for a
+        non-allowlisted push, because remote_url already holds the
+        correct value from argv[2] and the code only OVERWRITES it on
+        subprocess success (`if result.returncode == 0: remote_url =
+        ...`), never on failure. This is a genuinely safe-by-construction
+        path, not a fault we can trigger with this seam -- included as a
+        confirming regression pin, not a red proof. It WOULD fail if the
+        hook were changed to require `git remote get-url` to succeed
+        before evaluating the allowlist (e.g. `remote_url =
+        result.stdout.strip()` unconditionally, dropping the argv[2]
+        fallback), which would make the reject path SILENTLY DEPEND on an
+        optional subprocess.
+        """
+        stub_dir = make_failing_git_stub(tmp_path_factory, fail_subcommand="remote")
+        bare = tmp_path_factory.mktemp("bare_pp_inject_reject")
+        subprocess.run(["git", "init", "--bare", str(bare)], check=True,
+                       capture_output=True, env=os.environ.copy())
+        git(["remote", "add", "disallowed", str(bare)], cwd=tmp_vault)
+        stage_and_commit(tmp_vault, "pp_inject_reject.md", "clean content\n")
+
+        result = run(
+            ["git", "push", "disallowed", "HEAD:refs/heads/main"],
+            cwd=tmp_vault,
+            extra_env=stub_env(stub_dir),
+        )
+        assert result.returncode != 0, (
+            "A push to a non-allowlisted remote must still be rejected "
+            "even when the hook's internal 'git remote get-url' "
+            "enrichment call fails"
+        )
+
+    def test_pre_push_allow_unaffected_by_internal_remote_lookup_failure(
+        self, tmp_path, tmp_path_factory
+    ):
+        """
+        The other direction of the same confirming pin: a push to a
+        remote that genuinely IS allowlisted (baked via config.toml at
+        cairn init time, per DESIGN.md's config source) must still
+        succeed even when the enrichment subprocess fails, because
+        argv[2] already carried the correct, already-allowlisted URL.
+
+        ENTANGLED WITH ITEM 4, NOT ITEM 2 (documented honestly, not
+        mis-predicted): this test necessarily depends on config.toml
+        actually being able to bake an allowlist entry at all, which is
+        item 4's still-open gap (current code has no config.toml support
+        and ignores it). So THIS specific test is currently RED, but for
+        item 4's reason (the push is rejected because the remote was
+        never actually allowlisted), not because the fault injection
+        broke anything. Once item 4 lands, this test starts exercising
+        what it is actually meant to prove: that the ALLOW outcome
+        specifically is unaffected by the enrichment subprocess failing.
+        The REJECT-side sibling test above is not entangled with item 4
+        and is a clean, already-green confirming pin today.
+        """
+        stub_dir = make_failing_git_stub(tmp_path_factory, fail_subcommand="remote")
+        bare = tmp_path_factory.mktemp("bare_pp_inject_allow")
+        subprocess.run(["git", "init", "--bare", str(bare)], check=True,
+                       capture_output=True, env=os.environ.copy())
+
+        config_home = tmp_path_factory.mktemp("xdg_config_pp_inject")
+        write_allowlist_config(config_home, [str(bare)])
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        init_result = run(
+            ["cairn", "init", str(vault)],
+            extra_env={"XDG_CONFIG_HOME": str(config_home)},
+        )
+        assert init_result.returncode == 0, (
+            f"setup: cairn init with the test config.toml must succeed.\n"
+            f"stderr: {init_result.stderr}"
+        )
+        git(["remote", "add", "allowed", str(bare)], cwd=vault)
+        stage_and_commit(vault, "pp_inject_allow.md", "clean content\n")
+
+        result = run(
+            ["git", "push", "allowed", "HEAD:refs/heads/main"],
+            cwd=vault,
+            extra_env=stub_env(stub_dir),
+        )
+        assert result.returncode == 0, (
+            f"A push to an allowlisted remote must still succeed even "
+            f"when the hook's internal 'git remote get-url' enrichment "
+            f"call fails.\nstderr: {result.stderr}"
         )

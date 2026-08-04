@@ -29,6 +29,25 @@ def git(args, cwd):
     return run(["git"] + args, cwd=cwd)
 
 
+def write_allowlist_config(config_home: Path, prefixes) -> None:
+    """
+    Write a minimal `<config_home>/cairn/config.toml` with a [remote]
+    allowed_prefixes list. DESIGN.md 'Remote allowlist' / 'Config source':
+    the allowlist lives at '~/.config/cairn/config.toml' under '[remote]
+    allowed_prefixes', with '~/.config' resolved via $XDG_CONFIG_HOME when
+    set -- 'which is also the seam the test suite uses to inject a
+    temporary config; the runtime environment carries no allowlist values
+    of its own.' Mirrors the identically-named helper in test_hooks.py.
+    """
+    cairn_dir = config_home / "cairn"
+    cairn_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["[remote]", "allowed_prefixes = ["]
+    for p in prefixes:
+        lines.append(f'  "{p}",')
+    lines.append("]")
+    (cairn_dir / "config.toml").write_text("\n".join(lines) + "\n")
+
+
 # ---------------------------------------------------------------------------
 # cairn init: folder structure
 # ---------------------------------------------------------------------------
@@ -195,17 +214,40 @@ class TestCairnInitIdempotency:
         assert note.exists()
         assert "Existing" in note.read_text()
 
-    def test_init_reports_existing_vs_created(self, tmp_vault):
+    def test_init_reports_created_on_fresh_vault(self, tmp_path):
         """
-        cairn init must report what it created vs what was already present.
-        DESIGN.md: 'cairn init reports what it created versus what was already present.'
-        We assert the exit is zero; actual message content is implementation-dependent
-        but must not be silent.
+        DESIGN.md: 'cairn init reports what it created versus what was
+        already present.' Tightened (spec-QA review, NOTE accepted): the
+        old version only asserted SOME output existed, which passes on
+        literally any non-empty string and proves nothing about the
+        created-vs-present distinction. A fresh vault's first init must
+        specifically report creation.
+        """
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        result = run(["cairn", "init", str(vault)])
+        assert result.returncode == 0
+        combined = (result.stdout + result.stderr).lower()
+        assert "created" in combined, (
+            f"First cairn init on a fresh vault must report what it "
+            f"created. Got: {result.stdout + result.stderr!r}"
+        )
+
+    def test_init_reports_already_present_on_second_run(self, tmp_vault):
+        """
+        The other half of the created-vs-present distinction: re-running
+        cairn init on an ALREADY-initialised vault (tmp_vault ran init once
+        via the fixture) must report that folders/config are already
+        present, not just repeat the same creation messaging. A test that
+        only checked non-empty output would pass even if init printed the
+        identical string on every run regardless of state.
         """
         result = run(["cairn", "init", str(tmp_vault)])
         assert result.returncode == 0
-        assert result.stdout.strip() or result.stderr.strip(), (
-            "cairn init must produce some output (created vs already present)"
+        combined = (result.stdout + result.stderr).lower()
+        assert "already exist" in combined or "already present" in combined, (
+            f"Second cairn init on an existing vault must report what was "
+            f"ALREADY PRESENT. Got: {result.stdout + result.stderr!r}"
         )
 
 
@@ -243,10 +285,16 @@ class TestCairnInitRemoteAllowlist:
 
     def test_allowlisted_remote_accepted(self, tmp_path, tmp_path_factory):
         """
-        A remote URL matching the CFG-INNERSOURCE allowlist prefix must be accepted.
-        We use a local bare repo whose URL is crafted to look like the allowlist prefix
-        by overriding the allowlist for the test.
-        DESIGN.md: 'The remote allowlist must be overridable for tests'.
+        A remote URL matching an allowlisted prefix must be accepted.
+        DESIGN.md 'Config source': the allowlist lives at a config.toml
+        resolved via $XDG_CONFIG_HOME, not an environment variable (an
+        earlier version of this test used
+        CAIRN_ALLOWED_REMOTE_PREFIXES, which the design explicitly
+        rejects: 'the runtime environment carries no allowlist values of
+        its own'). We write a temp config.toml naming the local bare
+        repo's path and point XDG_CONFIG_HOME at it for the SECOND cairn
+        init call, which is the one that must pick up and accept the
+        remote.
         """
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -255,12 +303,16 @@ class TestCairnInitRemoteAllowlist:
                        capture_output=True, env=os.environ.copy())
         run(["cairn", "init", str(vault)])
 
-        # Add the bare repo as a remote with an allowlisted prefix.
-        # We override the allowlist to include the local bare repo path.
-        allowlist_env = {"CAIRN_ALLOWED_REMOTE_PREFIXES": str(bare)}
+        # Add the bare repo as a remote, then re-init with a config.toml
+        # that allowlists it.
+        config_home = tmp_path_factory.mktemp("xdg_config_accept")
+        write_allowlist_config(config_home, [str(bare)])
         git(["remote", "add", "origin", str(bare)], cwd=vault)
 
-        result = run(["cairn", "init", str(vault)], extra_env=allowlist_env)
+        result = run(
+            ["cairn", "init", str(vault)],
+            extra_env={"XDG_CONFIG_HOME": str(config_home)},
+        )
         assert result.returncode == 0, (
             f"Allowlisted remote must be accepted.\nstderr: {result.stderr}"
         )
@@ -296,8 +348,12 @@ class TestCairnInitGitIdentity:
 
     def test_missing_user_email_message_is_clear(self, tmp_path):
         """
-        The error or warning message when email is missing must be clear.
-        We assert there is SOME output; the exact wording is implementation-defined.
+        DESIGN.md: 'cairn init ... refuses auto-commit with a clear
+        message.' Tightened (spec-QA review, NOTE accepted): the old
+        version only asserted non-empty output, which is true of every
+        cairn init invocation regardless of whether it ever mentions email
+        at all. The message must specifically name the missing-email
+        condition.
         """
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -311,8 +367,12 @@ class TestCairnInitGitIdentity:
         finally:
             gcfg.write_text(original)
 
-        combined = result.stdout + result.stderr
-        assert combined.strip(), "Missing email must produce a message"
+        combined = (result.stdout + result.stderr).lower()
+        assert "email" in combined, (
+            f"Missing email must produce a message that specifically names "
+            f"the email condition, not just any non-empty output. "
+            f"Got: {result.stdout + result.stderr!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -438,18 +498,15 @@ class TestCairnDoctor:
             "Doctor must name the missing hook in its output"
         )
 
-    def test_doctor_sha256_matches_rerender(self, tmp_vault):
-        """
-        DESIGN.md: 'cairn doctor verifies that both hooks exist, are executable,
-        and match a fresh in-memory re-render from the current package and config
-        (by SHA-256).'
-        Doctor passes on a freshly installed hook (already tested), and fails on a
-        tampered one (tested above). This test asserts the SHA-256 match mechanism
-        is explicitly tested by the suite.
-        """
-        # Verify that a freshly rendered hook matches what doctor expects.
-        result = run(["cairn", "doctor"], cwd=tmp_vault)
-        assert result.returncode == 0
+    # test_doctor_sha256_matches_rerender was removed here (spec-QA review,
+    # confirmed BLOCK): it asserted only `returncode == 0` on a clean vault,
+    # which is true of nearly every test in this class and proves nothing
+    # about the SHA-256 re-render mechanism specifically. That mechanism is
+    # already genuinely pinned, both directions, by
+    # test_doctor_fails_hook_content_tampered (tampering -> hard fail) and
+    # test_doctor_fix_reinstalls_tampered_hook (--fix restores -> doctor
+    # passes again). A vacuous restatement adds no coverage; deleted rather
+    # than kept as a decoy.
 
     def test_doctor_zero_remotes_is_warning_not_fail(self, tmp_vault):
         """
@@ -537,6 +594,33 @@ class TestDoctorHooksPathDiversion:
             f"Got: {combined!r}"
         )
 
+    def test_fix_does_not_clear_hookspath_diversion(self, tmp_vault):
+        """
+        (spec-QA review, convergent BLOCK): the two tests above never
+        exercised --fix. --fix REPORTS a diverted core.hooksPath but
+        cannot FIX it: there is no hook file to repair (the installed
+        .git/hooks content and mode are already correct; the problem is
+        that git is configured to ignore that directory entirely). The
+        only real fix is a manual `git config --unset core.hooksPath`,
+        which cairn does not (and should not silently) do. --fix must
+        still hard fail and must still name the condition, not clear it.
+        """
+        diverted = tmp_vault.parent / "diverted-hooks-fix"
+        diverted.mkdir()
+        git(["config", "core.hooksPath", str(diverted)], cwd=tmp_vault)
+        result = run(["cairn", "doctor", "--fix"], cwd=tmp_vault)
+        assert result.returncode != 0, (
+            "cairn doctor --fix must NOT report healthy when core.hooksPath "
+            "is diverted -- --fix has nothing to reinstall that would "
+            "restore git's use of .git/hooks, so it must still hard fail"
+        )
+        combined = (result.stdout + result.stderr).lower()
+        assert "hookspath" in combined or "core.hookspath" in combined, (
+            f"doctor --fix must still name the hooksPath condition in its "
+            f"output, not silently drop it after attempting a fix. "
+            f"Got: {result.stdout + result.stderr!r}"
+        )
+
     def test_hookspath_unset_is_unaffected(self, tmp_vault):
         """Positive control: a vault that never touched core.hooksPath must
         still pass doctor (this is the ordinary, already-covered case;
@@ -595,40 +679,55 @@ class TestDoctorFixDoesNotEraseUnrelatedFailure:
 # ---------------------------------------------------------------------------
 
 class TestDoctorAllowlistRebakeDrift:
-    def test_stale_baked_allowlist_fails_doctor(self, tmp_vault):
+    """
+    DESIGN.md 'Config source' (spec-QA amendment): the allowlist lives in
+    config.toml resolved via $XDG_CONFIG_HOME, not an environment
+    variable. tmp_vault was initialised via the fixture with NO
+    XDG_CONFIG_HOME override, so its pre-push hook has the DEFAULT
+    (CFG-INNERSOURCE) allowlist baked in.
+    """
+
+    def test_stale_baked_allowlist_fails_doctor(self, tmp_vault, tmp_path_factory):
         """
-        Simulate a config change that was never re-baked via cairn init:
-        doctor must fail loudly on the mismatch between the installed hook
-        (baked with the default allowlist) and a fresh render from the
-        now-different config, not silently pass.
+        Simulate a config.toml change that was never re-baked via cairn
+        init: point XDG_CONFIG_HOME at a DIFFERENT config only for the
+        doctor call (never re-running init), so doctor's fresh re-render
+        diverges from the installed hook. Doctor must fail loudly on the
+        mismatch, not silently pass.
         """
+        config_home = tmp_path_factory.mktemp("xdg_config_stale")
+        write_allowlist_config(config_home, ["https://github.com/SOME-OTHER-ORG/"])
+
         result = run(
             ["cairn", "doctor"],
             cwd=tmp_vault,
-            extra_env={"CAIRN_ALLOWED_REMOTE_PREFIXES": "https://github.com/SOME-OTHER-ORG/"},
+            extra_env={"XDG_CONFIG_HOME": str(config_home)},
         )
         assert result.returncode != 0, (
             "doctor must fail loudly when the installed pre-push hook's "
             "baked allowlist no longer matches a fresh render from current "
-            "config"
+            "config.toml"
         )
         combined = (result.stdout + result.stderr).lower()
         assert "pre-push" in combined, (
             "doctor must name the pre-push hook as the point of mismatch"
         )
 
-    def test_rebake_via_init_after_config_change_fixes_drift(self, tmp_vault):
-        """After the config changes, re-running cairn init re-bakes the
-        hook and doctor passes again when checked against that same
-        (new) config."""
-        env = {"CAIRN_ALLOWED_REMOTE_PREFIXES": "https://github.com/SOME-OTHER-ORG/"}
+    def test_rebake_via_init_after_config_change_fixes_drift(self, tmp_vault, tmp_path_factory):
+        """After config.toml changes, re-running cairn init with that same
+        config re-bakes the hook, and doctor passes again when checked
+        against that same (new) config.toml."""
+        config_home = tmp_path_factory.mktemp("xdg_config_rebake")
+        write_allowlist_config(config_home, ["https://github.com/SOME-OTHER-ORG/"])
+        env = {"XDG_CONFIG_HOME": str(config_home)}
+
         reinit = run(["cairn", "init", str(tmp_vault)], extra_env=env)
         assert reinit.returncode == 0, f"setup: re-init must succeed.\nstderr: {reinit.stderr}"
 
         result = run(["cairn", "doctor"], cwd=tmp_vault, extra_env=env)
         assert result.returncode == 0, (
-            f"After re-baking via cairn init with the new config, doctor "
-            f"must pass when checked against that same config.\n"
+            f"After re-baking via cairn init with the new config.toml, "
+            f"doctor must pass when checked against that same config.\n"
             f"stderr: {result.stderr}"
         )
 

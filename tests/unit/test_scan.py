@@ -547,6 +547,71 @@ class TestAnthropicKeyRule:
 
 
 # ---------------------------------------------------------------------------
+# v1 scope EXCLUSION gate (spec-QA review, BLOCK): every other test in this
+# file proves a v1 rule DOES fire; none of them proves a dropped/deferred
+# rule does NOT. A builder could leave scan.py's v2/dropped rules in place
+# (as the current pre-rework implementation in fact does) and pass every
+# positive/negative test above while still shipping card, SSN, labelled-
+# token, and suppression logic that DESIGN.md's v1 scope explicitly
+# excludes (see "Pre-commit content scan": card/SSN dropped; labelled
+# high-entropy-token + its entropy gate + cairn:allow-secret suppression
+# deferred to v2). These are ABSENCE tests: v1 scan_bytes must yield ZERO
+# findings for inputs that the removed rules would have caught, and the
+# suppression marker must have NO effect since v1 recognizes no such
+# directive. All four are expected RED right now: the current scan.py
+# still carries every one of these rules.
+# ---------------------------------------------------------------------------
+
+class TestV1ScopeExcludesDroppedAndDeferredRules:
+    def test_luhn_valid_card_number_yields_no_findings(self, scan):
+        """4111111111111111 is the well-known Luhn-valid VISA test number."""
+        findings = findings_for(scan, "card: 4111111111111111")
+        assert findings == [], (
+            f"v1 ships no payment-card rule (dropped for this vault); a "
+            f"Luhn-valid card number must yield ZERO findings. "
+            f"Got: {findings}"
+        )
+
+    def test_ssn_formatted_line_yields_no_findings(self, scan):
+        findings = findings_for(scan, "ssn: 123-45-6789")
+        assert findings == [], (
+            f"v1 ships no SSN rule (dropped for this vault); an "
+            f"SSN-formatted line must yield ZERO findings. "
+            f"Got: {findings}"
+        )
+
+    def test_labelled_high_entropy_token_yields_no_findings(self, scan):
+        """
+        A recognized label plus a 40-char random-looking value: exactly
+        the shape the v2-deferred labelled-token rule (with its entropy
+        gate) was built to catch. v1 must not catch it at all.
+        """
+        line = "api_key = xK9mP2nQ8rT5vW1yZ3bD6fH0jL4uE7gA9cN2mPqR"
+        findings = findings_for(scan, line)
+        assert findings == [], (
+            f"v1 defers the labelled high-entropy-token rule to v2; a "
+            f"labelled token line must yield ZERO findings in v1. "
+            f"Got: {findings}"
+        )
+
+    def test_suppression_marker_does_not_suppress_v1_finding(self, scan):
+        """
+        v1 ships no cairn:allow-secret suppression marker (deferred to
+        v2). A genuine synthetic AWS key on a line ENDING with the marker
+        text must STILL fire aws_access_key_id -- the marker is not yet a
+        recognized directive at all in v1, so it must have NO effect,
+        positive or negative.
+        """
+        line = "key = AKIAIOSFODNN7EXAMPLE  cairn:allow-secret"
+        findings = findings_for(scan, line)
+        assert "aws_access_key_id" in rule_names(findings), (
+            f"v1 ships no suppression marker; a genuine AWS key must "
+            f"still fire even when the line ends with "
+            f"'cairn:allow-secret'. Got: {findings}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Sentinel lines must not appear in scan.py itself
 # ---------------------------------------------------------------------------
 
