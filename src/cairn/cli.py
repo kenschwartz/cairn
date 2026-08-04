@@ -4,9 +4,21 @@ import sys
 from cairn.commands.init import run_init
 from cairn.commands.doctor import run_doctor
 from cairn.commands.new import run_new
+from cairn.errors import CairnError
 
 
 def main():
+    try:
+        return _dispatch()
+    except CairnError as exc:
+        print(f"cairn: error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("cairn: interrupted", file=sys.stderr)
+        return 130
+
+
+def _dispatch():
     parser = argparse.ArgumentParser(prog="cairn")
     parser.add_argument("--version", action="version", version="cairn 1.0.0")
     subparsers = parser.add_subparsers(dest="command")

@@ -1,8 +1,8 @@
 import os
-import subprocess
 from pathlib import Path
 
 from cairn import vault
+from cairn.errors import CairnError
 from cairn.hooks import render
 from cairn.gitadapter import run_git
 
@@ -22,7 +22,8 @@ def get_allowlist():
 def check_remotes(vault_path: Path, allowlist: list[str]):
     result = run_git(["remote", "-v"], vault_path)
     if result.returncode != 0:
-        return True, ""
+        detail = result.stderr.strip() or f"git exited {result.returncode}"
+        return False, f"error: could not read git remotes: {detail}"
     urls = set()
     for line in result.stdout.strip().splitlines():
         parts = line.split()
@@ -39,58 +40,69 @@ def check_remotes(vault_path: Path, allowlist: list[str]):
 def install_hooks(vault_path: Path, allowlist: list[str]):
     import cairn.scan as scan_mod
 
-    scan_source = Path(scan_mod.__file__).read_text()
+    try:
+        scan_source = Path(scan_mod.__file__).read_text()
+    except OSError as exc:
+        raise CairnError(f"could not read the scan source to render hooks: {exc}") from exc
+
     pre_commit = render.render_pre_commit(scan_source)
     pre_push = render.render_pre_push(allowlist)
 
-    hooks_dir = vault_path / ".git" / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
+    git_dir = vault_path / ".git"
+    if not git_dir.exists():
+        raise CairnError(
+            f"cannot install hooks: {vault_path} is not a git repository"
+        )
 
-    pc_path = hooks_dir / "pre-commit"
-    pc_path.write_text(pre_commit)
-    pc_path.chmod(0o755)
-
-    pp_path = hooks_dir / "pre-push"
-    pp_path.write_text(pre_push)
-    pp_path.chmod(0o755)
+    hooks_dir = git_dir / "hooks"
+    try:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        for name, content in (("pre-commit", pre_commit), ("pre-push", pre_push)):
+            hook_path = hooks_dir / name
+            hook_path.write_text(content)
+            hook_path.chmod(0o755)
+    except OSError as exc:
+        raise CairnError(f"could not install git hooks in {hooks_dir}: {exc}") from exc
 
 
 def run_init(args):
     vault_path = Path(args.path).resolve()
-    vault_path.mkdir(parents=True, exist_ok=True)
-
     messages = []
 
-    for name in vault.VAULT_DIRS:
-        p = vault_path / name
-        if p.exists():
-            messages.append(f"{name}/ already exists")
-        else:
-            p.mkdir(parents=True, exist_ok=True)
-            messages.append(f"Created {name}/")
+    try:
+        vault_path.mkdir(parents=True, exist_ok=True)
+
+        for name in vault.VAULT_DIRS:
+            p = vault_path / name
+            if p.exists():
+                messages.append(f"{name}/ already exists")
+            else:
+                p.mkdir(parents=True, exist_ok=True)
+                messages.append(f"Created {name}/")
+    except OSError as exc:
+        raise CairnError(f"could not create the vault layout under {vault_path}: {exc}") from exc
 
     git_dir = vault_path / ".git"
     if git_dir.exists():
         messages.append("git repository already exists")
     else:
-        result = subprocess.run(
-            ["git", "init"],
-            capture_output=True,
-            text=True,
-            cwd=str(vault_path),
-            env=os.environ.copy(),
-        )
-        if result.returncode == 0:
-            messages.append("Initialized git repository")
-        else:
-            messages.append("error: git init failed")
+        result = run_git(["init"], vault_path)
+        if result.returncode != 0:
+            for msg in messages:
+                print(msg)
+            detail = result.stderr.strip() or f"git exited {result.returncode}"
+            raise CairnError(f"git init failed in {vault_path}: {detail}")
+        messages.append("Initialized git repository")
 
     gi_path = vault_path / ".gitignore"
     if gi_path.exists():
         messages.append(".gitignore already exists")
     else:
         messages.append("Created .gitignore")
-    vault.write_gitignore(vault_path)
+    try:
+        vault.write_gitignore(vault_path)
+    except OSError as exc:
+        raise CairnError(f"could not write {gi_path}: {exc}") from exc
 
     allowlist = get_allowlist()
     install_hooks(vault_path, allowlist)
