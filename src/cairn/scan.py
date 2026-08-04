@@ -42,6 +42,10 @@ def _luhn_valid(digits: str) -> bool:
     return total % 10 == 0
 
 
+def _finding(rule: str, path: str, line_num: int, value: str) -> "Finding":
+    return Finding(rule=rule, path=path, line=line_num, excerpt=_mask(value))
+
+
 def _mask(value: str) -> str:
     if len(value) > 12:
         return value[:12]
@@ -61,6 +65,19 @@ _SSN_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _FP_RE = re.compile(r"(?i)(commit|sha|hash|uuid|guid|ticket|jira|version|build)")
 
 
+def _entropy_gate(value: str) -> bool:
+    return _shannon_entropy(value) >= ENTROPY_THRESHOLD
+
+
+# rule name, pattern, capture group holding the secret, optional extra gate
+_REGEX_RULES = (
+    ("private_key", _PRIVATE_KEY_RE, 0, None),
+    ("aws_access_key_id", _AWS_RE, 0, None),
+    ("labelled_token", _TOKEN_LABEL_RE, 1, _entropy_gate),
+    ("us_ssn", _SSN_RE, 0, None),
+)
+
+
 def scan_bytes(data: bytes, path: str) -> list[Finding]:
     if b"\x00" in data[:8192]:
         return []
@@ -74,47 +91,12 @@ def scan_bytes(data: bytes, path: str) -> list[Finding]:
         if stripped.endswith("cairn:allow-secret"):
             continue
 
-        for m in _PRIVATE_KEY_RE.finditer(line):
-            findings.append(
-                Finding(
-                    rule="private_key",
-                    path=path,
-                    line=line_num,
-                    excerpt=_mask(m.group(0)),
-                )
-            )
-
-        for m in _AWS_RE.finditer(line):
-            findings.append(
-                Finding(
-                    rule="aws_access_key_id",
-                    path=path,
-                    line=line_num,
-                    excerpt=_mask(m.group(0)),
-                )
-            )
-
-        for m in _TOKEN_LABEL_RE.finditer(line):
-            token = m.group(1)
-            if _shannon_entropy(token) >= ENTROPY_THRESHOLD:
-                findings.append(
-                    Finding(
-                        rule="labelled_token",
-                        path=path,
-                        line=line_num,
-                        excerpt=_mask(token),
-                    )
-                )
-
-        for m in _SSN_RE.finditer(line):
-            findings.append(
-                Finding(
-                    rule="us_ssn",
-                    path=path,
-                    line=line_num,
-                    excerpt=_mask(m.group(0)),
-                )
-            )
+        for rule, pattern, group, gate in _REGEX_RULES:
+            for m in pattern.finditer(line):
+                value = m.group(group)
+                if gate is not None and not gate(value):
+                    continue
+                findings.append(_finding(rule, path, line_num, value))
 
         i = 0
         while i < len(line):
@@ -133,12 +115,7 @@ def scan_bytes(data: bytes, path: str) -> list[Finding]:
                         context = before + after
                         if not _FP_RE.search(context):
                             findings.append(
-                                Finding(
-                                    rule="payment_card",
-                                    path=path,
-                                    line=line_num,
-                                    excerpt=_mask(digits_only),
-                                )
+                                _finding("payment_card", path, line_num, digits_only)
                             )
                 continue
             i += 1

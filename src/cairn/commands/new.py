@@ -1,5 +1,6 @@
 import datetime
 import sys
+import uuid
 from pathlib import Path
 
 from cairn import frontmatter, slugs, tags, vault
@@ -9,16 +10,19 @@ VALID_TYPES = {"note", "todo", "meeting", "reference", "project", "moc"}
 VALID_STATUSES = {"active", "waiting", "done", "archived"}
 
 
+def _fail(message: str) -> int:
+    print(f"error: {message}", file=sys.stderr)
+    return 1
+
+
 def run_new(args):
     title = args.title
     if not title:
-        print("error: title is required", file=sys.stderr)
-        return 1
+        return _fail("title is required")
 
     note_type = args.type or "note"
     if note_type not in VALID_TYPES:
-        print(f"error: invalid type '{note_type}'", file=sys.stderr)
-        return 1
+        return _fail(f"invalid type '{note_type}'")
 
     raw_tags = args.tag or []
     if not raw_tags:
@@ -33,8 +37,7 @@ def run_new(args):
     base_path = notes_dir / f"{base_slug}.md"
 
     if base_path.exists() and is_dirty(base_path, vault_path):
-        print(f"error: {base_path} has uncommitted changes", file=sys.stderr)
-        return 1
+        return _fail(f"{base_path} has uncommitted changes")
 
     candidate = f"{base_slug}.md"
     i = 2
@@ -44,11 +47,10 @@ def run_new(args):
     target_path = notes_dir / candidate
 
     if is_dirty(target_path, vault_path):
-        print(f"error: {target_path} has uncommitted changes", file=sys.stderr)
-        return 1
+        return _fail(f"{target_path} has uncommitted changes")
 
     today = datetime.date.today().isoformat()
-    note_id = __import__("uuid").uuid4().hex[:8]
+    note_id = uuid.uuid4().hex[:8]
 
     fm = {
         "id": note_id,
@@ -74,7 +76,7 @@ def run_new(args):
 
     commit_result = commit_paths([target_path], vault_path, f"cairn new: {title}")
     if commit_result.returncode != 0:
-        print(f"error: commit failed. File written to {target_path}.", file=sys.stderr)
+        _fail(f"commit failed. File written to {target_path}.")
         print(commit_result.stderr, file=sys.stderr)
         return 1
 

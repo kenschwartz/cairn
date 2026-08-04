@@ -1,10 +1,9 @@
 import os
-import subprocess
 from pathlib import Path
 
 from cairn import vault
 from cairn.hooks import render
-from cairn.gitadapter import run_git
+from cairn.gitadapter import git_config_value, init_repo, run_git
 
 DEFAULT_ALLOWLIST = [
     "https://github.com/CFG-INNERSOURCE/",
@@ -12,10 +11,14 @@ DEFAULT_ALLOWLIST = [
 ]
 
 
+def parse_allowlist(value: str) -> list[str]:
+    return [p.strip() for p in value.split(",") if p.strip()]
+
+
 def get_allowlist():
     env = os.environ.get("CAIRN_ALLOWED_REMOTE_PREFIXES")
     if env:
-        return [p.strip() for p in env.split(",") if p.strip()]
+        return parse_allowlist(env)
     return DEFAULT_ALLOWLIST[:]
 
 
@@ -36,25 +39,6 @@ def check_remotes(vault_path: Path, allowlist: list[str]):
     return True, ""
 
 
-def install_hooks(vault_path: Path, allowlist: list[str]):
-    import cairn.scan as scan_mod
-
-    scan_source = Path(scan_mod.__file__).read_text()
-    pre_commit = render.render_pre_commit(scan_source)
-    pre_push = render.render_pre_push(allowlist)
-
-    hooks_dir = vault_path / ".git" / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-
-    pc_path = hooks_dir / "pre-commit"
-    pc_path.write_text(pre_commit)
-    pc_path.chmod(0o755)
-
-    pp_path = hooks_dir / "pre-push"
-    pp_path.write_text(pre_push)
-    pp_path.chmod(0o755)
-
-
 def run_init(args):
     vault_path = Path(args.path).resolve()
     vault_path.mkdir(parents=True, exist_ok=True)
@@ -72,18 +56,10 @@ def run_init(args):
     git_dir = vault_path / ".git"
     if git_dir.exists():
         messages.append("git repository already exists")
+    elif init_repo(vault_path).returncode == 0:
+        messages.append("Initialized git repository")
     else:
-        result = subprocess.run(
-            ["git", "init"],
-            capture_output=True,
-            text=True,
-            cwd=str(vault_path),
-            env=os.environ.copy(),
-        )
-        if result.returncode == 0:
-            messages.append("Initialized git repository")
-        else:
-            messages.append("error: git init failed")
+        messages.append("error: git init failed")
 
     gi_path = vault_path / ".gitignore"
     if gi_path.exists():
@@ -93,7 +69,7 @@ def run_init(args):
     vault.write_gitignore(vault_path)
 
     allowlist = get_allowlist()
-    install_hooks(vault_path, allowlist)
+    render.install_hooks(vault_path, allowlist)
     messages.append("Installed git hooks")
 
     ok, remote_msg = check_remotes(vault_path, allowlist)
@@ -104,9 +80,7 @@ def run_init(args):
             print(msg)
         return 1
 
-    email_result = run_git(["config", "user.email"], vault_path)
-    email = email_result.stdout.strip()
-    if not email:
+    if not git_config_value("user.email", vault_path):
         messages.append("warning: git user.email is not set; auto-commit will be disabled")
 
     for msg in messages:

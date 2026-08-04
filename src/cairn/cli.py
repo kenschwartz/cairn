@@ -5,6 +5,12 @@ from cairn.commands.init import run_init
 from cairn.commands.doctor import run_doctor
 from cairn.commands.new import run_new
 
+COMMANDS = {
+    "init": run_init,
+    "doctor": run_doctor,
+    "new": run_new,
+}
+
 
 def main():
     parser = argparse.ArgumentParser(prog="cairn")
@@ -26,15 +32,11 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "init":
-        return run_init(args)
-    elif args.command == "doctor":
-        return run_doctor(args)
-    elif args.command == "new":
-        return run_new(args)
-    else:
+    handler = COMMANDS.get(args.command)
+    if handler is None:
         parser.print_help()
         return 1
+    return handler(args)
 
 
 if __name__ == "__main__":
