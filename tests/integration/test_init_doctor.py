@@ -481,16 +481,156 @@ class TestCairnDoctor:
             "Doctor must check ~/.local/bin on PATH"
         )
 
-    def test_doctor_history_scan_runs_by_default(self, tmp_vault):
-        """
-        DESIGN.md: 'cairn doctor runs a bounded history scan as part of its
-        base checks: the working tree plus the last 20 commits'.
-        Doctor output must include some indication it scanned history.
-        """
+
+# ---------------------------------------------------------------------------
+# BLOCK 4 companion removal (deliberate expectation change):
+# test_doctor_history_scan_runs_by_default asserted only `returncode == 0`
+# on a clean vault, which is true whether or not any history scan ever
+# runs -- it is not a proof the scan exists. DESIGN.md 'Security enforcement
+# via git hooks' marks the bounded history scan explicitly '(v2, deferred)'
+# and TODO.md 'Deferred scan features (v2)' lists it as not-yet-active. A
+# v1 gate must not require v2 behaviour, vacuous or not, so this test was
+# removed rather than strengthened. If the history scan lands in v2,
+# re-derive it from a NON-VACUOUS assertion (specific finding content only
+# the scan could produce) with a negative control (clean-history vault must
+# NOT warn) -- see test_hooks.py's TestNoVerifyBypass docstring for the
+# same note.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BLOCK 2 (Tier 0, docs/reviews/phase1-review-triage-2026-08-03.md):
+# `git config core.hooksPath <dir>` makes git stop using .git/hooks/
+# entirely -- no scan, no allowlist enforcement -- while doctor's hash
+# check still finds the (now-dead) hooks present, executable, and
+# matching, and reports green. DESIGN.md 'Hook mechanism', "Scope for v1:
+# one top-level worktree" (amended after the earlier FIX-DESIGN flag on
+# this exact point was raised and accepted): 'core.hooksPath, linked
+# worktrees, and submodules are out of scope for v1; cairn doctor reports
+# rather than adapts if it finds core.hooksPath set, and that report is a
+# HARD FAIL (non-zero exit), because a diverted hooks path means the
+# installed hooks never run while everything else still looks green.'
+# The design now pins hard-fail explicitly; no ambiguity remains.
+# ---------------------------------------------------------------------------
+
+class TestDoctorHooksPathDiversion:
+    def test_hookspath_diverted_doctor_does_not_report_green(self, tmp_vault):
+        diverted = tmp_vault.parent / "diverted-hooks"
+        diverted.mkdir()
+        git(["config", "core.hooksPath", str(diverted)], cwd=tmp_vault)
+        result = run(["cairn", "doctor"], cwd=tmp_vault)
+        assert result.returncode != 0, (
+            "doctor must not report green when core.hooksPath diverts git "
+            "away from the verified .git/hooks -- the installed hooks are "
+            "dead and doctor's hash check no longer means anything"
+        )
+
+    def test_hookspath_diverted_named_in_output(self, tmp_vault):
+        diverted = tmp_vault.parent / "diverted-hooks-2"
+        diverted.mkdir()
+        git(["config", "core.hooksPath", str(diverted)], cwd=tmp_vault)
         result = run(["cairn", "doctor"], cwd=tmp_vault)
         combined = result.stdout + result.stderr
-        # Just assert it ran and didn't crash; clean vault should produce no warnings.
+        assert "hookspath" in combined.lower() or "core.hookspath" in combined.lower(), (
+            "doctor must name the specific condition (core.hooksPath) so "
+            "the user knows why, not just fail generically. "
+            f"Got: {combined!r}"
+        )
+
+    def test_hookspath_unset_is_unaffected(self, tmp_vault):
+        """Positive control: a vault that never touched core.hooksPath must
+        still pass doctor (this is the ordinary, already-covered case;
+        included here so a broken hooksPath check cannot be 'fixed' by
+        making doctor fail unconditionally)."""
+        result = run(["cairn", "doctor"], cwd=tmp_vault)
         assert result.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# BLOCK 3 (Tier 1, docs/reviews/phase1-review-triage-2026-08-03.md):
+# doctor.py's --fix path sets `hard_fail = False` unconditionally after
+# reinstalling hooks, wiping a hard_fail the REMOTE check had already set.
+# A vault with a forbidden remote AND missing hooks comes out of
+# `cairn doctor --fix` reporting healthy, exit 0.
+# ---------------------------------------------------------------------------
+
+class TestDoctorFixDoesNotEraseUnrelatedFailure:
+    def test_fix_does_not_erase_forbidden_remote_failure(self, tmp_vault):
+        git(["remote", "add", "origin", "https://github.com/personal/badrepo.git"],
+            cwd=tmp_vault)
+        (tmp_vault / ".git" / "hooks" / "pre-commit").unlink()
+
+        result = run(["cairn", "doctor", "--fix"], cwd=tmp_vault)
+        assert result.returncode != 0, (
+            "doctor --fix must not report healthy when a forbidden remote "
+            "is still configured, even though the hook reinstall succeeded"
+        )
+        combined = (result.stdout + result.stderr).lower()
+        assert "badrepo" in combined or "not in allowlist" in combined or "remote" in combined, (
+            f"doctor --fix must still report the forbidden remote in its "
+            f"output. Got: {result.stdout + result.stderr!r}"
+        )
+
+    def test_fix_still_reinstalls_the_hook_despite_remote_failure(self, tmp_vault):
+        """The hook fix itself must still happen -- BLOCK 3 is about the
+        remote failure being erased, not about the hook fix being skipped."""
+        git(["remote", "add", "origin", "https://github.com/personal/badrepo.git"],
+            cwd=tmp_vault)
+        (tmp_vault / ".git" / "hooks" / "pre-commit").unlink()
+
+        run(["cairn", "doctor", "--fix"], cwd=tmp_vault)
+
+        hook = tmp_vault / ".git" / "hooks" / "pre-commit"
+        assert hook.exists(), "the missing hook must still be reinstalled"
+        assert stat.S_IMODE(hook.stat().st_mode) == 0o755
+
+
+# ---------------------------------------------------------------------------
+# DESIGN.md 'Remote allowlist': 'cairn doctor compares the installed hook
+# against a fresh render from current config and FAILS LOUDLY when they
+# diverge, so a stale baked list cannot silently persist.' ... 'Editing the
+# allowlist requires re-baking the hook: the baked list is a snapshot, so
+# after editing config the user runs cairn init (or cairn doctor --fix) to
+# re-render the pre-push hook.'
+# ---------------------------------------------------------------------------
+
+class TestDoctorAllowlistRebakeDrift:
+    def test_stale_baked_allowlist_fails_doctor(self, tmp_vault):
+        """
+        Simulate a config change that was never re-baked via cairn init:
+        doctor must fail loudly on the mismatch between the installed hook
+        (baked with the default allowlist) and a fresh render from the
+        now-different config, not silently pass.
+        """
+        result = run(
+            ["cairn", "doctor"],
+            cwd=tmp_vault,
+            extra_env={"CAIRN_ALLOWED_REMOTE_PREFIXES": "https://github.com/SOME-OTHER-ORG/"},
+        )
+        assert result.returncode != 0, (
+            "doctor must fail loudly when the installed pre-push hook's "
+            "baked allowlist no longer matches a fresh render from current "
+            "config"
+        )
+        combined = (result.stdout + result.stderr).lower()
+        assert "pre-push" in combined, (
+            "doctor must name the pre-push hook as the point of mismatch"
+        )
+
+    def test_rebake_via_init_after_config_change_fixes_drift(self, tmp_vault):
+        """After the config changes, re-running cairn init re-bakes the
+        hook and doctor passes again when checked against that same
+        (new) config."""
+        env = {"CAIRN_ALLOWED_REMOTE_PREFIXES": "https://github.com/SOME-OTHER-ORG/"}
+        reinit = run(["cairn", "init", str(tmp_vault)], extra_env=env)
+        assert reinit.returncode == 0, f"setup: re-init must succeed.\nstderr: {reinit.stderr}"
+
+        result = run(["cairn", "doctor"], cwd=tmp_vault, extra_env=env)
+        assert result.returncode == 0, (
+            f"After re-baking via cairn init with the new config, doctor "
+            f"must pass when checked against that same config.\n"
+            f"stderr: {result.stderr}"
+        )
 
 
 # ---------------------------------------------------------------------------

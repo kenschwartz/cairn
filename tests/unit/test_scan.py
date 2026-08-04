@@ -1,10 +1,21 @@
 """
 Unit tests for the content scanner (cairn.scan).
 
-Every rule needs a positive case AND a negative near-miss.
-Entropy gate is pinned from both sides.
-Suppression semantics are exact.
-Masking is asserted.
+Every rule needs a positive case AND a negative near-miss, per DESIGN.md
+"Pre-commit content scan": 'v1 ships the high-precision credential and
+key-material rules ... an implementation ships these and no fewer, and the
+test suite pins each with a positive and a negative case.'
+
+v1 scope (DESIGN.md, decided 2026-08-03, "go lighter"): private key block,
+AWS access key id, public key block, SSH public key line, GitHub token,
+Anthropic API key, plus binary-skip. The labelled high-entropy-token rule
+and its entropy gate, the payment-card and SSN rules, and the
+cairn:allow-secret suppression marker are NOT v1 (dropped or deferred to
+v2 -- see TODO.md "Deferred scan features (v2)") and are intentionally
+absent from this file. Do not re-add them without a design change.
+
+Masking is asserted exactly per DESIGN.md "Failure behaviour": masking
+happens INSIDE scan_bytes so Finding.excerpt is always safe.
 
 Hermeticity: no filesystem I/O, no git, no subprocess.
 scan_bytes() is a pure function and is tested as such.
@@ -75,6 +86,23 @@ def rule_names(findings):
     return {f.rule for f in findings}
 
 
+def expected_excerpt(secret: str) -> str:
+    """
+    Hand-derive the expected masked excerpt per DESIGN.md's exact rule:
+      - 1-2 chars: fixed placeholder only, no real characters -> "[...]"
+      - 3-8 chars: first + last char, middle replaced -> "x[...]y"
+      - longer:    first 4 + placeholder + last 4 -> "abcd[...]wxyz"
+    This mirrors the contract, not any implementation, so it is safe to
+    use for hand-derived assertions against a from-spec implementation.
+    """
+    n = len(secret)
+    if n <= 2:
+        return "[...]"
+    if n <= 8:
+        return secret[0] + "[...]" + secret[-1]
+    return secret[:4] + "[...]" + secret[-4:]
+
+
 # ---------------------------------------------------------------------------
 # scan.py stdlib-only constraint
 # ---------------------------------------------------------------------------
@@ -128,11 +156,20 @@ class TestScanInterface:
         scan.scan_bytes(b"\xff\xfe\x00bad utf8\xab", "bad.md")
 
     def test_binary_file_skipped(self, scan):
-        """Null byte in first 8192 bytes means binary; skip the file."""
-        data = b"secret = abcdefghijklmnopqrstuvwxyz01234\x00rest"
+        """
+        Null byte in first 8192 bytes means binary; skip the file.
+
+        The content before the null byte is a genuine v1 rule match (an AWS
+        key id), not filler text, so this test actually proves the binary
+        skip suppresses a real finding rather than merely proving that
+        arbitrary text produces no findings.
+        """
+        data = b"key = AKIAIOSFODNN7EXAMPLE\x00rest"
         findings = scan.scan_bytes(data, "binary.bin")
         assert findings == [], (
-            "Files with null byte in first 8192 bytes must be skipped"
+            "Files with null byte in first 8192 bytes must be skipped, even "
+            "when the content before the null byte would otherwise match a "
+            "rule"
         )
 
     def test_null_byte_beyond_8192_does_not_suppress(self, scan):
@@ -146,6 +183,13 @@ class TestScanInterface:
 
 # ---------------------------------------------------------------------------
 # Rule: Private key block
+# DESIGN.md rules table (amended after an earlier FIX-DESIGN flag on this
+# exact gap was raised and accepted -- Ken's recorded intent: "catch all
+# key material"): '-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH|PGP) )?
+# (?:ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----'. The optional ' BLOCK' suffix
+# is what makes the real GPG ASCII-armored header
+# ('-----BEGIN PGP PRIVATE KEY BLOCK-----') match; without it the PGP
+# alternative could never fire on real PGP output.
 # ---------------------------------------------------------------------------
 
 class TestPrivateKeyRule:
@@ -170,6 +214,20 @@ class TestPrivateKeyRule:
     def test_positive_bare_private_key(self, scan):
         assert self.RULE in rule_names(findings_for(scan, "-----BEGIN PRIVATE KEY-----\nfake\n"))
 
+    def test_positive_encrypted_bare(self, scan):
+        """
+        DESIGN.md's rules table adds '(?:ENCRYPTED )?' to the private key
+        pattern. '-----BEGIN ENCRYPTED PRIVATE KEY-----' is the standard
+        PKCS8 encrypted-key header (e.g. what `openssl pkcs8` emits) and
+        must fire.
+        """
+        data = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nfake\n"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
+    def test_positive_encrypted_with_type_prefix(self, scan):
+        data = "-----BEGIN RSA ENCRYPTED PRIVATE KEY-----\nfake\n"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
     def test_negative_public_key(self, scan):
         data = "-----BEGIN PUBLIC KEY-----\nMIIBIjAN...\n-----END PUBLIC KEY-----\n"
         assert self.RULE not in rule_names(findings_for(scan, data))
@@ -178,13 +236,51 @@ class TestPrivateKeyRule:
         data = "-----BEGIN CERTIFICATE-----\nMIID...\n-----END CERTIFICATE-----\n"
         assert self.RULE not in rule_names(findings_for(scan, data))
 
+    def test_positive_pgp_block_real_world_form(self, scan):
+        """
+        DESIGN GAP RESOLVED (was flagged as a FIX-DESIGN gap, now accepted
+        and fixed at the design level per Ken's recorded intent "catch all
+        key material"): DESIGN.md's private key pattern is now
+        '-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH|PGP) )?(?:ENCRYPTED )?PRIVATE
+        KEY(?: BLOCK)?-----'. The added optional ' BLOCK' suffix is what
+        makes GPG's real ASCII-armored header,
+        '-----BEGIN PGP PRIVATE KEY BLOCK-----', match. Verified by hand
+        against the exact pattern text (re.search, Python 3.14): it now
+        matches, full match '-----BEGIN PGP PRIVATE KEY BLOCK-----'
+        (37 chars). This is a positive test, not a negative one anymore.
+        """
+        data = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nfake\n-----END PGP PRIVATE KEY BLOCK-----\n"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
+    def test_negative_pgp_public_key_block_does_not_fire_private_key(self, scan):
+        """
+        Genuine negative control alongside the positive above: a PGP
+        PUBLIC key block ('-----BEGIN PGP PUBLIC KEY BLOCK-----') must
+        NOT fire the private_key rule -- it is the public counterpart,
+        not a secret.
+
+        Note (verified by hand, not assumed): DESIGN.md's public_key
+        pattern ('-----BEGIN (?:.* )?PUBLIC KEY-----') was NOT given the
+        same '(?: BLOCK)?' treatment as the private_key pattern, so a
+        real PGP public key block does not fire public_key EITHER under
+        the current design text -- this test asserts only what is true
+        (private_key does not fire), not that public_key does. That gap
+        is separate from the one just fixed and is reported back, not
+        silently patched here.
+        """
+        data = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nfake\n-----END PGP PUBLIC KEY BLOCK-----\n"
+        assert self.RULE not in rule_names(findings_for(scan, data))
+
     def test_masking(self, scan):
         data = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n"
         fs = findings_for(scan, data)
         rsa_findings = [f for f in fs if f.rule == self.RULE]
         assert rsa_findings
+        expected = expected_excerpt("-----BEGIN RSA PRIVATE KEY-----")
         for f in rsa_findings:
-            assert len(f.excerpt) <= 20, f"Excerpt too long: {f.excerpt!r}"
+            assert f.excerpt == expected, (
+                f"Expected hand-derived excerpt {expected!r}, got {f.excerpt!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -233,242 +329,221 @@ class TestAWSKeyRule:
         fs = findings_for(scan, self.VALID_AKIA)
         found = [f for f in fs if f.rule == self.RULE]
         assert found
+        expected = expected_excerpt(self.VALID_AKIA)
         for f in found:
             assert self.VALID_AKIA not in f.excerpt
-
-
-# ---------------------------------------------------------------------------
-# Rule: Labelled high-entropy token
-# ---------------------------------------------------------------------------
-
-class TestLabelledTokenRule:
-    RULE = "labelled_token"
-
-    HIGH_ENTROPY_VALUE = "xK9mP2nQ8rT5vW1yZ3bD6fH0jL4uE7gA9cN2mPqR"
-    # 35 chars, 3 distinct symbols, entropy ~1.58. Long enough to reach the gate.
-    LOW_ENTROPY_VALUE = "abcabcabcabcabcabcabcabcabcabcabcab"
-
-    def test_positive_secret(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, f"secret = {self.HIGH_ENTROPY_VALUE}"))
-
-    def test_positive_token(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, f"token: {self.HIGH_ENTROPY_VALUE}"))
-
-    def test_positive_api_key(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, f"api_key = {self.HIGH_ENTROPY_VALUE}"))
-
-    def test_positive_apikey(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, f"apikey: {self.HIGH_ENTROPY_VALUE}"))
-
-    def test_positive_password(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, f"password = {self.HIGH_ENTROPY_VALUE}"))
-
-    def test_positive_passwd(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, f"passwd: {self.HIGH_ENTROPY_VALUE}"))
-
-    def test_positive_access_key(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, f"access_key = {self.HIGH_ENTROPY_VALUE}"))
-
-    def test_positive_case_insensitive_label(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, f"SECRET = {self.HIGH_ENTROPY_VALUE}"))
-
-    def test_entropy_gate_low_entropy_does_not_fire(self, scan):
-        """
-        Low-entropy 35-char fixture is long enough to reach the gate
-        (clears the {32,} length rule) but must be rejected by the entropy check.
-        DESIGN.md: 'abcabcabcabcabcabcabcabcabcabcabcab (35 chars, three distinct symbols, entropy 1.58)'
-        """
-        line = f"token = {self.LOW_ENTROPY_VALUE}"
-        fs = findings_for(scan, line)
-        assert self.RULE not in rule_names(fs), (
-            f"Low-entropy value must not fire (entropy gate must reject it). "
-            f"Got findings: {fs}"
-        )
-
-    def test_entropy_gate_high_entropy_fires(self, scan):
-        line = f"token = {self.HIGH_ENTROPY_VALUE}"
-        assert self.RULE in rule_names(findings_for(scan, line))
-
-    def test_entropy_constant_named_symbol_exists(self, scan):
-        assert hasattr(scan, "ENTROPY_THRESHOLD"), (
-            "scan.py must expose ENTROPY_THRESHOLD as a named symbol"
-        )
-
-    def test_entropy_constant_value_is_3_0(self, scan):
-        assert scan.ENTROPY_THRESHOLD == 3.0, (
-            f"ENTROPY_THRESHOLD must be 3.0, got {scan.ENTROPY_THRESHOLD}"
-        )
-
-    def test_negative_short_value_under_32_chars(self, scan):
-        """Under 32 chars: rejected by length rule, never reaches entropy gate."""
-        assert self.RULE not in rule_names(findings_for(scan, "token = shortval1234"))
-
-    def test_masking(self, scan):
-        line = f"secret = {self.HIGH_ENTROPY_VALUE}"
-        fs = findings_for(scan, line)
-        found = [f for f in fs if f.rule == self.RULE]
-        assert found
-        for f in found:
-            assert self.HIGH_ENTROPY_VALUE not in f.excerpt
-
-
-# ---------------------------------------------------------------------------
-# Rule: Payment card (Luhn)
-# ---------------------------------------------------------------------------
-
-class TestPaymentCardRule:
-    RULE = "payment_card"
-
-    VISA_TEST = "4111111111111111"
-    MC_TEST = "5500005555555559"
-    AMEX_TEST = "371449635398431"
-    DISCOVER_TEST = "6011111111111117"
-
-    def test_positive_visa(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, self.VISA_TEST))
-
-    def test_positive_mc(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, self.MC_TEST))
-
-    def test_positive_amex(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, self.AMEX_TEST))
-
-    def test_positive_discover(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, self.DISCOVER_TEST))
-
-    def test_positive_with_spaces(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, "4111 1111 1111 1111"))
-
-    def test_positive_with_hyphens(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, "4111-1111-1111-1111"))
-
-    def test_negative_luhn_fail(self, scan):
-        bad_luhn = "4111111111111112"
-        assert self.RULE not in rule_names(findings_for(scan, bad_luhn))
-
-    def test_negative_too_short(self, scan):
-        """12-digit run is below 13-digit minimum."""
-        assert self.RULE not in rule_names(findings_for(scan, "411111111111"))
-
-    def test_negative_commit_context(self, scan):
-        text = f"sha: {self.VISA_TEST} in repo"
-        fs = findings_for(scan, text)
-        assert self.RULE not in rule_names(fs)
-
-    def test_negative_hash_context(self, scan):
-        text = f"hash {self.VISA_TEST} end"
-        fs = findings_for(scan, text)
-        assert self.RULE not in rule_names(fs)
-
-    def test_negative_uuid_context(self, scan):
-        text = f"uuid context {self.VISA_TEST} end"
-        fs = findings_for(scan, text)
-        assert self.RULE not in rule_names(fs)
-
-    def test_negative_build_context(self, scan):
-        text = f"build={self.VISA_TEST}"
-        fs = findings_for(scan, text)
-        assert self.RULE not in rule_names(fs)
-
-    def test_masking(self, scan):
-        fs = findings_for(scan, self.VISA_TEST)
-        found = [f for f in fs if f.rule == self.RULE]
-        assert found
-        for f in found:
-            assert self.VISA_TEST not in f.excerpt
-
-
-# ---------------------------------------------------------------------------
-# Rule: US SSN
-# ---------------------------------------------------------------------------
-
-class TestSSNRule:
-    RULE = "us_ssn"
-
-    def test_positive_hyphenated_zero(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, "ssn: 000-00-0000"))
-
-    def test_positive_real_pattern(self, scan):
-        assert self.RULE in rule_names(findings_for(scan, "My SSN is 123-45-6789."))
-
-    def test_negative_bare_9_digits(self, scan):
-        assert self.RULE not in rule_names(findings_for(scan, "reference 123456789 end"))
-
-    def test_negative_wrong_grouping_2_2_4(self, scan):
-        assert self.RULE not in rule_names(findings_for(scan, "12-34-5678"))
-
-    def test_negative_wrong_grouping_4_2_3(self, scan):
-        assert self.RULE not in rule_names(findings_for(scan, "1234-56-789"))
-
-    def test_masking(self, scan):
-        fs = findings_for(scan, "ssn: 000-00-0000")
-        found = [f for f in fs if f.rule == self.RULE]
-        assert found
-        for f in found:
-            assert "000-00-0000" not in f.excerpt
-
-
-# ---------------------------------------------------------------------------
-# Suppression marker
-# ---------------------------------------------------------------------------
-
-class TestSuppression:
-    HIGH = "xK9mP2nQ8rT5vW1yZ3bD6fH0jL4uE7gA9cN2mPqR"
-
-    def test_suppressed_on_same_line_token(self, scan):
-        line = f"secret = {self.HIGH}  cairn:allow-secret"
-        assert findings_for(scan, line) == []
-
-    def test_suppressed_on_same_line_private_key(self, scan):
-        line = "-----BEGIN RSA PRIVATE KEY-----  cairn:allow-secret"
-        assert findings_for(scan, line) == []
-
-    def test_suppressed_on_same_line_ssn(self, scan):
-        line = "ssn: 000-00-0000  cairn:allow-secret"
-        assert findings_for(scan, line) == []
-
-    def test_suppressed_on_same_line_aws(self, scan):
-        line = "key = AKIAIOSFODNN7EXAMPLE  cairn:allow-secret"
-        assert findings_for(scan, line) == []
-
-    def test_suppression_does_not_affect_adjacent_next_line(self, scan):
-        """Marker on line 2 does NOT suppress line 3."""
-        text = (
-            f"secret = {self.HIGH}  cairn:allow-secret\n"
-            f"secret = {self.HIGH}\n"
-        )
-        fs = findings_for(scan, text)
-        assert len(fs) >= 1, "Line without marker must still fire"
-        for f in fs:
-            assert f.line != 1, (
-                "Line 1 has cairn:allow-secret and must be suppressed"
+            assert f.excerpt == expected, (
+                f"Expected hand-derived excerpt {expected!r}, got {f.excerpt!r}"
             )
 
-    def test_suppression_does_not_affect_adjacent_prev_line(self, scan):
-        """Marker on line 2 does NOT suppress line 1."""
-        text = (
-            f"secret = {self.HIGH}\n"
-            f"secret = {self.HIGH}  cairn:allow-secret\n"
-        )
-        fs = findings_for(scan, text)
-        assert len(fs) >= 1, "Line 1 must still fire"
-        assert any(f.line == 1 for f in fs), "Finding must come from line 1"
 
-    def test_suppression_marker_must_be_line_suffix_not_mid_line(self, scan):
+# ---------------------------------------------------------------------------
+# Rule: Public key block
+# DESIGN.md rules table: '-----BEGIN (?:.* )?PUBLIC KEY-----'
+# 'Public keys are NOT secret; blocking is a cleanliness policy (no key
+# material in notes). Drop this row if it ever blocks a legitimate
+# SSH-setup note.'
+# ---------------------------------------------------------------------------
+
+class TestPublicKeyRule:
+    RULE = "public_key"
+
+    def test_positive_bare(self, scan):
+        data = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...\n"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
+    def test_positive_rsa_prefixed(self, scan):
+        data = "-----BEGIN RSA PUBLIC KEY-----\nMIIBCgKCAQEA...\n"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
+    def test_negative_certificate(self, scan):
+        """A certificate block is not a public key block."""
+        data = "-----BEGIN CERTIFICATE-----\nMIID...\n-----END CERTIFICATE-----\n"
+        assert self.RULE not in rule_names(findings_for(scan, data))
+
+    def test_negative_mentions_public_key_without_begin_marker(self, scan):
         """
-        Marker in the middle of the line does NOT suppress.
-        DESIGN.md: 'not a substring match anywhere on the line'.
+        The literal text 'PUBLIC KEY-----' with no preceding '-----BEGIN '
+        on the same line must not fire (prose ABOUT the format, not the
+        format itself).
         """
-        line = f"see cairn:allow-secret docs and secret = {self.HIGH}"
+        data = "This document explains PUBLIC KEY----- format basics."
+        assert self.RULE not in rule_names(findings_for(scan, data))
+
+    def test_does_not_also_fire_private_key_rule(self, scan):
+        data = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...\n"
+        assert "private_key" not in rule_names(findings_for(scan, data))
+
+    def test_masking(self, scan):
+        data = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A...\n"
+        fs = findings_for(scan, data)
+        found = [f for f in fs if f.rule == self.RULE]
+        assert found
+        expected = expected_excerpt("-----BEGIN PUBLIC KEY-----")
+        for f in found:
+            assert f.excerpt == expected, (
+                f"Expected hand-derived excerpt {expected!r}, got {f.excerpt!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Rule: SSH public key line
+# DESIGN.md rules table: '^(?:ssh-rsa|ssh-dss|ssh-ed25519|
+# ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9-]+)(?:@[a-z0-9.-]+)?\s+
+# [A-Za-z0-9+/=]{40,}'
+# 'authorized_keys / id_*.pub format, including FIDO security-key types
+# (sk-ssh-ed25519@openssh.com).'
+# ---------------------------------------------------------------------------
+
+class TestSSHPublicKeyRule:
+    RULE = "ssh_public_key"
+
+    # 45 chars: clears the {40,} minimum.
+    BLOB = "AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLE0EXAMPLE0EXAM"
+    # 35 chars: under the {40,} minimum -- deliberate near-miss.
+    SHORT_BLOB = "AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLE0EX"
+    FIDO_BLOB = "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIEXAMPLE0EXAMPLE0EXAM"
+
+    def test_positive_ssh_ed25519(self, scan):
+        line = f"ssh-ed25519 {self.BLOB} user@example.local"
+        assert self.RULE in rule_names(findings_for(scan, line))
+
+    def test_positive_ssh_rsa(self, scan):
+        line = f"ssh-rsa {self.BLOB} user@example.local"
+        assert self.RULE in rule_names(findings_for(scan, line))
+
+    def test_positive_ecdsa(self, scan):
+        line = f"ecdsa-sha2-nistp256 {self.BLOB} user@example.local"
+        assert self.RULE in rule_names(findings_for(scan, line))
+
+    def test_positive_fido_sk_ssh_ed25519(self, scan):
+        """FIDO security-key form, per DESIGN.md explicitly."""
+        line = f"sk-ssh-ed25519@openssh.com {self.FIDO_BLOB} user@example.local"
+        assert self.RULE in rule_names(findings_for(scan, line))
+
+    def test_negative_blob_under_40_chars(self, scan):
+        line = f"ssh-ed25519 {self.SHORT_BLOB} user@example.local"
+        assert self.RULE not in rule_names(findings_for(scan, line))
+
+    def test_negative_not_at_line_start(self, scan):
+        """
+        DESIGN.md anchors the pattern at '^' (line start). A comment
+        prefix before the key type must prevent the match.
+        """
+        line = f"# ssh-ed25519 {self.BLOB} user@example.local"
+        assert self.RULE not in rule_names(findings_for(scan, line))
+
+    def test_negative_unknown_key_type(self, scan):
+        line = f"dsa-nope {self.BLOB} user@example.local"
+        assert self.RULE not in rule_names(findings_for(scan, line))
+
+    def test_masking(self, scan):
+        line = f"ssh-ed25519 {self.BLOB} user@example.local"
         fs = findings_for(scan, line)
-        assert len(fs) >= 1, (
-            "Marker not at line end must NOT suppress the finding"
-        )
+        found = [f for f in fs if f.rule == self.RULE]
+        assert found
+        full_match = f"ssh-ed25519 {self.BLOB}"
+        expected = expected_excerpt(full_match)
+        for f in found:
+            assert self.BLOB not in f.excerpt
+            assert f.excerpt == expected, (
+                f"Expected hand-derived excerpt {expected!r}, got {f.excerpt!r}"
+            )
 
-    def test_suppression_with_trailing_whitespace(self, scan):
-        """Trailing whitespace after the marker is stripped; still suppresses."""
-        line = f"secret = {self.HIGH}  cairn:allow-secret   "
-        assert findings_for(scan, line) == []
+
+# ---------------------------------------------------------------------------
+# Rule: GitHub token
+# DESIGN.md rules table: 'gh[opsru]_[A-Za-z0-9]{36}'
+# ---------------------------------------------------------------------------
+
+class TestGithubTokenRule:
+    RULE = "github_token"
+
+    # Exactly 36 chars, alnum only, per the {36} exact count.
+    CONT_36 = ("EXAMPLE0" * 4) + "EXAM"
+
+    def test_positive_ghp(self, scan):
+        assert len(self.CONT_36) == 36
+        line = f"token = ghp_{self.CONT_36}"
+        assert self.RULE in rule_names(findings_for(scan, line))
+
+    def test_positive_gho(self, scan):
+        """oauth-prefixed variant, per the [opsru] character class."""
+        line = f"token = gho_{self.CONT_36}"
+        assert self.RULE in rule_names(findings_for(scan, line))
+
+    def test_negative_35_chars(self, scan):
+        """One character short of the required 36 must not fire."""
+        cont_35 = self.CONT_36[:-1]
+        assert len(cont_35) == 35
+        line = f"token = ghp_{cont_35}"
+        assert self.RULE not in rule_names(findings_for(scan, line))
+
+    def test_negative_wrong_prefix_letter(self, scan):
+        """'x' is not in the [opsru] class."""
+        line = f"token = ghx_{self.CONT_36}"
+        assert self.RULE not in rule_names(findings_for(scan, line))
+
+    def test_masking(self, scan):
+        line = f"token = ghp_{self.CONT_36}"
+        fs = findings_for(scan, line)
+        found = [f for f in fs if f.rule == self.RULE]
+        assert found
+        full_match = f"ghp_{self.CONT_36}"
+        assert len(full_match) == 40
+        expected = expected_excerpt(full_match)
+        for f in found:
+            assert self.CONT_36 not in f.excerpt
+            assert f.excerpt == expected, (
+                f"Expected hand-derived excerpt {expected!r}, got {f.excerpt!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Rule: Anthropic API key
+# DESIGN.md rules table: 'sk-ant-api[A-Za-z0-9_-]{20,}'
+# ---------------------------------------------------------------------------
+
+class TestAnthropicKeyRule:
+    RULE = "anthropic_api_key"
+
+    # 20 chars from [A-Za-z0-9_-]: exactly clears the {20,} minimum.
+    CONT_20 = "03-EXAMPLE0000000000"
+
+    def test_positive_at_minimum_length(self, scan):
+        assert len(self.CONT_20) == 20
+        line = f"key = sk-ant-api{self.CONT_20}"
+        assert self.RULE in rule_names(findings_for(scan, line))
+
+    def test_positive_longer(self, scan):
+        line = f"key = sk-ant-api{self.CONT_20}EXTRAEXTRA"
+        assert self.RULE in rule_names(findings_for(scan, line))
+
+    def test_negative_17_chars(self, scan):
+        """Three characters short of the {20,} minimum must not fire."""
+        cont_17 = "03-EXAMPLE0000000"
+        assert len(cont_17) == 17
+        line = f"key = sk-ant-api{cont_17}"
+        assert self.RULE not in rule_names(findings_for(scan, line))
+
+    def test_negative_missing_api_infix(self, scan):
+        """'sk-ant-' without the 'api' infix must not fire."""
+        line = f"key = sk-ant-{self.CONT_20}"
+        assert self.RULE not in rule_names(findings_for(scan, line))
+
+    def test_masking(self, scan):
+        line = f"key = sk-ant-api{self.CONT_20}"
+        fs = findings_for(scan, line)
+        found = [f for f in fs if f.rule == self.RULE]
+        assert found
+        full_match = f"sk-ant-api{self.CONT_20}"
+        assert len(full_match) == 30
+        expected = expected_excerpt(full_match)
+        for f in found:
+            assert self.CONT_20 not in f.excerpt
+            assert f.excerpt == expected, (
+                f"Expected hand-derived excerpt {expected!r}, got {f.excerpt!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -488,21 +563,92 @@ class TestSentinelConstraint:
 
 
 # ---------------------------------------------------------------------------
-# Masking (cross-rule)
+# Masking (cross-rule): the exact 3-tier contract from DESIGN.md
+# "Pre-commit content scan" / "Failure behaviour":
+#   1-2 chars   -> fixed placeholder only, no real characters: "[...]"
+#   3-8 chars   -> first + last char, middle replaced: "x[...]y"
+#   >8 chars    -> first 4 + placeholder + last 4: "abcd[...]wxyz"
+#
+# IMPORTANT (documented, not worked around): every v1 rule's minimum
+# match length is well above 8 characters (the shortest possible match is
+# the 20-char AWS key id; private/public key headers, SSH lines, GitHub
+# tokens, and Anthropic keys are all longer). No v1 rule can produce a
+# match in the 1-2 or 3-8 char tiers, so those tiers cannot be exercised
+# through the public scan_bytes()/Finding contract -- there is no
+# documented seam (e.g. a standalone mask() function) to unit-test them
+# directly without assuming implementation internals this test author
+# must not assume. This is flagged in the return report as a FIX-DESIGN
+# gap: either document that v1 never reaches those tiers, or specify a
+# masking helper as part of the public contract so a black-box test can
+# pin them. The >8 tier below IS the tier every v1 rule actually uses and
+# is pinned exactly, hand-derived, for one fixture per rule family.
 # ---------------------------------------------------------------------------
 
 class TestMasking:
-    def test_excerpt_length_cap_private_key(self, scan):
+    def test_private_key_excerpt_exact(self, scan):
         data = "-----BEGIN RSA PRIVATE KEY-----\nfake\n"
         fs = findings_for(scan, data)
-        assert fs
-        for f in fs:
-            assert len(f.excerpt) <= 20, f"Excerpt too long: {f.excerpt!r}"
+        found = [f for f in fs if f.rule == "private_key"]
+        assert found
+        expected = expected_excerpt("-----BEGIN RSA PRIVATE KEY-----")
+        for f in found:
+            assert f.excerpt == expected
 
-    def test_aws_key_not_in_excerpt(self, scan):
+    def test_aws_key_excerpt_exact(self, scan):
         key = "AKIAIOSFODNN7EXAMPLE"
         fs = findings_for(scan, f"key={key}")
         found = [f for f in fs if f.rule == "aws_access_key_id"]
         assert found
+        expected = expected_excerpt(key)
         for f in found:
             assert key not in f.excerpt
+            assert f.excerpt == expected
+
+    def test_public_key_excerpt_exact(self, scan):
+        data = "-----BEGIN PUBLIC KEY-----\nfake\n"
+        fs = findings_for(scan, data)
+        found = [f for f in fs if f.rule == "public_key"]
+        assert found
+        expected = expected_excerpt("-----BEGIN PUBLIC KEY-----")
+        for f in found:
+            assert f.excerpt == expected
+
+    def test_github_token_excerpt_exact(self, scan):
+        cont = ("EXAMPLE0" * 4) + "EXAM"
+        fs = findings_for(scan, f"ghp_{cont}")
+        found = [f for f in fs if f.rule == "github_token"]
+        assert found
+        expected = expected_excerpt(f"ghp_{cont}")
+        for f in found:
+            assert cont not in f.excerpt
+            assert f.excerpt == expected
+
+    def test_anthropic_key_excerpt_exact(self, scan):
+        cont = "03-EXAMPLE0000000000"
+        fs = findings_for(scan, f"sk-ant-api{cont}")
+        found = [f for f in fs if f.rule == "anthropic_api_key"]
+        assert found
+        expected = expected_excerpt(f"sk-ant-api{cont}")
+        for f in found:
+            assert cont not in f.excerpt
+            assert f.excerpt == expected
+
+    def test_no_excerpt_ever_contains_the_full_secret(self, scan):
+        """
+        Cross-rule invariant, independent of the exact tier math: whatever
+        the masking produces, the full matched secret text must never
+        appear verbatim in any excerpt.
+        """
+        secrets_and_lines = [
+            ("AKIAIOSFODNN7EXAMPLE", "key = AKIAIOSFODNN7EXAMPLE"),
+            (
+                ("EXAMPLE0" * 4) + "EXAM",
+                "token = ghp_" + (("EXAMPLE0" * 4) + "EXAM"),
+            ),
+            ("03-EXAMPLE0000000000", "key = sk-ant-api03-EXAMPLE0000000000"),
+        ]
+        for secret_fragment, line in secrets_and_lines:
+            fs = findings_for(scan, line)
+            assert fs, f"expected a finding for {line!r}"
+            for f in fs:
+                assert secret_fragment not in f.excerpt
