@@ -32,6 +32,48 @@ class TestFixtureFiles:
         rules = {f.rule for f in findings}
         assert "private_key" in rules
 
+    def test_encrypted_private_key_fixture_fires(self, scan):
+        data = (FIXTURES / "encrypted_private_key.txt").read_bytes()
+        findings = scan.scan_bytes(data, "encrypted_private_key.txt")
+        rules = {f.rule for f in findings}
+        assert "private_key" in rules
+
+    def test_public_key_fixture_fires(self, scan):
+        data = (FIXTURES / "public_key.txt").read_bytes()
+        findings = scan.scan_bytes(data, "public_key.txt")
+        rules = {f.rule for f in findings}
+        assert "public_key" in rules
+
+    def test_ssh_public_key_fixture_fires(self, scan):
+        data = (FIXTURES / "ssh_public_key.txt").read_bytes()
+        findings = scan.scan_bytes(data, "ssh_public_key.txt")
+        rules = {f.rule for f in findings}
+        assert "ssh_public_key" in rules
+
+    def test_github_token_fixture_fires(self, scan):
+        data = (FIXTURES / "github_token.txt").read_bytes()
+        findings = scan.scan_bytes(data, "github_token.txt")
+        rules = {f.rule for f in findings}
+        assert "github_token" in rules
+
+    def test_anthropic_key_fixture_fires(self, scan):
+        data = (FIXTURES / "anthropic_key.txt").read_bytes()
+        findings = scan.scan_bytes(data, "anthropic_key.txt")
+        rules = {f.rule for f in findings}
+        assert "anthropic_api_key" in rules
+
+    def test_no_fixture_excerpt_contains_full_match(self, scan):
+        """Masking happens inside scan_bytes, so no excerpt may be a full match."""
+        for fixture in sorted(FIXTURES.glob("*.txt")):
+            data = fixture.read_bytes()
+            for f in scan.scan_bytes(data, fixture.name):
+                assert scan.MASK_PLACEHOLDER in f.excerpt, (
+                    f"{fixture.name}: unmasked excerpt {f.excerpt!r}"
+                )
+                assert f.excerpt not in data.decode("utf-8", errors="replace"), (
+                    f"{fixture.name}: excerpt {f.excerpt!r} appears verbatim in the file"
+                )
+
     def test_ssn_fixture_fires(self, scan):
         data = (FIXTURES / "ssn.txt").read_bytes()
         findings = scan.scan_bytes(data, "ssn.txt")

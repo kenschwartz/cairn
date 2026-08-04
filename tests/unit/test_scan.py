@@ -170,6 +170,10 @@ class TestPrivateKeyRule:
     def test_positive_bare_private_key(self, scan):
         assert self.RULE in rule_names(findings_for(scan, "-----BEGIN PRIVATE KEY-----\nfake\n"))
 
+    def test_positive_encrypted_private_key(self, scan):
+        data = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nfake\n"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
     def test_negative_public_key(self, scan):
         data = "-----BEGIN PUBLIC KEY-----\nMIIBIjAN...\n-----END PUBLIC KEY-----\n"
         assert self.RULE not in rule_names(findings_for(scan, data))
@@ -409,6 +413,140 @@ class TestSSNRule:
 
 
 # ---------------------------------------------------------------------------
+# Rule: Public key block
+# ---------------------------------------------------------------------------
+
+class TestPublicKeyRule:
+    RULE = "public_key"
+
+    def test_positive_bare(self, scan):
+        data = "-----BEGIN PUBLIC KEY-----\nMIIBIjAN...\n"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
+    def test_positive_rsa(self, scan):
+        data = "-----BEGIN RSA PUBLIC KEY-----\nMIIBIjAN...\n"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
+    def test_negative_certificate(self, scan):
+        data = "-----BEGIN CERTIFICATE-----\nMIID...\n"
+        assert self.RULE not in rule_names(findings_for(scan, data))
+
+    def test_masking(self, scan):
+        fs = [f for f in findings_for(scan, "-----BEGIN PUBLIC KEY-----\n") if f.rule == self.RULE]
+        assert fs
+        assert all("PUBLIC KEY" not in f.excerpt for f in fs)
+
+
+# ---------------------------------------------------------------------------
+# Rule: SSH public key line
+# ---------------------------------------------------------------------------
+
+class TestSSHPublicKeyRule:
+    RULE = "ssh_public_key"
+
+    BODY = "AAAAC3NzaC1lZDI1NTE5AAAAISYNTHETICNOTAREALKEYAAAAAAAAAAAA"
+
+    def test_positive_ed25519(self, scan):
+        assert self.RULE in rule_names(findings_for(scan, f"ssh-ed25519 {self.BODY} me@host"))
+
+    def test_positive_rsa(self, scan):
+        assert self.RULE in rule_names(findings_for(scan, f"ssh-rsa {self.BODY}"))
+
+    def test_positive_ecdsa(self, scan):
+        data = f"ecdsa-sha2-nistp256 {self.BODY}"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
+    def test_positive_fido_security_key(self, scan):
+        data = f"sk-ssh-ed25519@openssh.com {self.BODY}"
+        assert self.RULE in rule_names(findings_for(scan, data))
+
+    def test_negative_short_body(self, scan):
+        """Under 40 base64 characters must NOT fire."""
+        assert self.RULE not in rule_names(findings_for(scan, "ssh-ed25519 AAAAC3NzaC1lZDI1"))
+
+    def test_negative_prose_mentioning_key_type(self, scan):
+        data = f"Run ssh-keygen; the ssh-ed25519 {self.BODY} line goes in authorized_keys"
+        assert self.RULE not in rule_names(findings_for(scan, data))
+
+    def test_masking(self, scan):
+        fs = [f for f in findings_for(scan, f"ssh-ed25519 {self.BODY}") if f.rule == self.RULE]
+        assert fs
+        assert all(self.BODY not in f.excerpt for f in fs)
+
+
+# ---------------------------------------------------------------------------
+# Rule: GitHub token
+# ---------------------------------------------------------------------------
+
+class TestGitHubTokenRule:
+    RULE = "github_token"
+
+    TOKEN = "ghp_SYNTHETICnotARealTokenAAAAAAAAAAAAAA"  # ghp_ + 36 chars
+
+    def test_positive_pat(self, scan):
+        assert self.RULE in rule_names(findings_for(scan, f"pat: {self.TOKEN}"))
+
+    def test_positive_other_prefixes(self, scan):
+        for prefix in ("gho_", "ghp_", "ghs_", "ghr_", "ghu_"):
+            token = prefix + "A" * 36
+            assert self.RULE in rule_names(findings_for(scan, token)), prefix
+
+    def test_negative_too_short(self, scan):
+        assert self.RULE not in rule_names(findings_for(scan, "ghp_" + "A" * 35))
+
+    def test_negative_unknown_prefix(self, scan):
+        assert self.RULE not in rule_names(findings_for(scan, "ghz_" + "A" * 36))
+
+    def test_masking(self, scan):
+        fs = [f for f in findings_for(scan, self.TOKEN) if f.rule == self.RULE]
+        assert fs
+        assert all(self.TOKEN not in f.excerpt for f in fs)
+
+
+# ---------------------------------------------------------------------------
+# Rule: Anthropic API key
+# ---------------------------------------------------------------------------
+
+class TestAnthropicKeyRule:
+    RULE = "anthropic_api_key"
+
+    KEY = "sk-ant-apiSYNTHETIC-not-a-real-key-000"
+
+    def test_positive(self, scan):
+        assert self.RULE in rule_names(findings_for(scan, f"ANTHROPIC_API_KEY={self.KEY}"))
+
+    def test_negative_too_short(self, scan):
+        assert self.RULE not in rule_names(findings_for(scan, "sk-ant-api" + "A" * 19))
+
+    def test_negative_prefix_only(self, scan):
+        assert self.RULE not in rule_names(findings_for(scan, "sk-ant-" + "A" * 30))
+
+    def test_masking(self, scan):
+        fs = [f for f in findings_for(scan, self.KEY) if f.rule == self.RULE]
+        assert fs
+        assert all(self.KEY not in f.excerpt for f in fs)
+
+
+# ---------------------------------------------------------------------------
+# Masking contract
+# ---------------------------------------------------------------------------
+
+class TestMaskingContract:
+    def test_long_match_keeps_only_first_and_last_four(self, scan):
+        key = "AKIAIOSFODNN7EXAMPLE"
+        fs = [f for f in findings_for(scan, key) if f.rule == "aws_access_key_id"]
+        assert [f.excerpt for f in fs] == ["AKIA[...]MPLE"]
+
+    def test_short_match_keeps_only_first_and_last_character(self, scan):
+        assert scan._mask("abcde") == "a[...]e"
+
+    def test_very_short_match_reveals_nothing(self, scan):
+        assert scan._mask("ab") == "[...]"
+        assert scan._mask("a") == "[...]"
+        assert scan._mask("") == "[...]"
+
+
+# ---------------------------------------------------------------------------
 # Suppression marker
 # ---------------------------------------------------------------------------
 
@@ -419,16 +557,22 @@ class TestSuppression:
         line = f"secret = {self.HIGH}  cairn:allow-secret"
         assert findings_for(scan, line) == []
 
-    def test_suppressed_on_same_line_private_key(self, scan):
-        line = "-----BEGIN RSA PRIVATE KEY-----  cairn:allow-secret"
-        assert findings_for(scan, line) == []
+    def test_credential_rules_are_not_suppressible(self, scan):
+        """
+        The marker terminates a single line, but key material spans many, so the
+        credential and key-material rules ignore it and the commit still blocks.
+        """
+        for line in (
+            "-----BEGIN RSA PRIVATE KEY-----  cairn:allow-secret",
+            "key = AKIAIOSFODNN7EXAMPLE  cairn:allow-secret",
+            "-----BEGIN PUBLIC KEY-----  cairn:allow-secret",
+            "pat: ghp_SYNTHETICnotARealTokenAAAAAAAAAAAAAA  cairn:allow-secret",
+            "key: sk-ant-apiSYNTHETIC-not-a-real-key-000  cairn:allow-secret",
+        ):
+            assert findings_for(scan, line), f"must still fire: {line!r}"
 
     def test_suppressed_on_same_line_ssn(self, scan):
         line = "ssn: 000-00-0000  cairn:allow-secret"
-        assert findings_for(scan, line) == []
-
-    def test_suppressed_on_same_line_aws(self, scan):
-        line = "key = AKIAIOSFODNN7EXAMPLE  cairn:allow-secret"
         assert findings_for(scan, line) == []
 
     def test_suppression_does_not_affect_adjacent_next_line(self, scan):

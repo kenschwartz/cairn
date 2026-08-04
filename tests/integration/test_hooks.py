@@ -68,6 +68,11 @@ class TestHookBlocksSecret:
     HIGH_ENTROPY_TOKEN = "token: xK9mP2nQ8rT5vW1yZ3bD6fH0jL4uE7gA9cN2mPqR"
     SSN_SYNTHETIC = "ssn: 000-00-0000"
     CARD_SYNTHETIC = "card: 4111111111111111"
+    GITHUB_TOKEN_SYNTHETIC = "pat: ghp_SYNTHETICnotARealTokenAAAAAAAAAAAAAA"
+    ANTHROPIC_KEY_SYNTHETIC = "key: sk-ant-apiSYNTHETIC-not-a-real-key-000"
+    SSH_PUBLIC_KEY_SYNTHETIC = (
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISYNTHETICNOTAREALKEYAAAAAAAAAAAA me@host"
+    )
 
     def test_aws_key_blocks_commit(self, tmp_vault):
         before = commit_count(tmp_vault)
@@ -123,6 +128,49 @@ class TestHookBlocksSecret:
         result = stage_and_commit(tmp_vault, "token.md", f"# Note\n{self.HIGH_ENTROPY_TOKEN}\n")
         assert result.returncode != 0
         assert commit_count(tmp_vault) == before
+
+    def test_github_token_blocks_commit(self, tmp_vault):
+        before = commit_count(tmp_vault)
+        result = stage_and_commit(tmp_vault, "gh.md", f"# Note\n{self.GITHUB_TOKEN_SYNTHETIC}\n")
+        assert result.returncode != 0
+        assert commit_count(tmp_vault) == before
+
+    def test_anthropic_key_blocks_commit(self, tmp_vault):
+        before = commit_count(tmp_vault)
+        result = stage_and_commit(tmp_vault, "ant.md", f"# Note\n{self.ANTHROPIC_KEY_SYNTHETIC}\n")
+        assert result.returncode != 0
+        assert commit_count(tmp_vault) == before
+
+    def test_ssh_public_key_blocks_commit(self, tmp_vault):
+        before = commit_count(tmp_vault)
+        result = stage_and_commit(
+            tmp_vault, "pub.md", f"{self.SSH_PUBLIC_KEY_SYNTHETIC}\n"
+        )
+        assert result.returncode != 0
+        assert commit_count(tmp_vault) == before
+
+    def test_suppression_marker_does_not_bypass_private_key(self, tmp_vault):
+        """The marker terminates one line; a key block spans many, so it must not pass."""
+        before = commit_count(tmp_vault)
+        content = (
+            "-----BEGIN RSA PRIVATE KEY-----  cairn:allow-secret\n"
+            "FAKE KEY BODY FOR TEST\n"
+            "-----END RSA PRIVATE KEY-----\n"
+        )
+        result = stage_and_commit(tmp_vault, "suppressed_key.md", content)
+        assert result.returncode != 0
+        assert commit_count(tmp_vault) == before
+
+    def test_staged_deletion_does_not_break_the_hook(self, tmp_vault):
+        """A commit that only deletes a file must still be scanned and succeed."""
+        stage_and_commit(tmp_vault, "to_delete.md", "clean content\n")
+        before = commit_count(tmp_vault)
+        git(["rm", "notes/to_delete.md"], cwd=tmp_vault)
+        result = run(["git", "commit", "-m", "delete note"], cwd=tmp_vault)
+        assert result.returncode == 0, (
+            f"Deletion-only commit must not be blocked.\nstderr: {result.stderr}"
+        )
+        assert commit_count(tmp_vault) == before + 1
 
     def test_finding_output_does_not_contain_full_secret(self, tmp_vault):
         """

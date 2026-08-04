@@ -42,18 +42,28 @@ def _luhn_valid(digits: str) -> bool:
     return total % 10 == 0
 
 
+MASK_PLACEHOLDER = "[...]"
+
+
 def _mask(value: str) -> str:
-    if len(value) > 12:
-        return value[:12]
-    if len(value) > 6:
-        return value[:6]
-    if len(value) > 3:
-        return value[:3]
-    return value[:1] if value else ""
+    if len(value) > 8:
+        return f"{value[:4]}{MASK_PLACEHOLDER}{value[-4:]}"
+    if len(value) >= 3:
+        return f"{value[0]}{MASK_PLACEHOLDER}{value[-1]}"
+    return MASK_PLACEHOLDER
 
 
-_PRIVATE_KEY_RE = re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?(?:ENCRYPTED )?PRIVATE KEY-----"
+)
 _AWS_RE = re.compile(r"\b(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ABIA)[0-9A-Z]{16}\b")
+_PUBLIC_KEY_RE = re.compile(r"-----BEGIN (?:.* )?PUBLIC KEY-----")
+_SSH_PUBLIC_KEY_RE = re.compile(
+    r"^(?:ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9-]+)"
+    r"(?:@[a-z0-9.-]+)?\s+[A-Za-z0-9+/=]{40,}"
+)
+_GITHUB_TOKEN_RE = re.compile(r"gh[opsru]_[A-Za-z0-9]{36}")
+_ANTHROPIC_KEY_RE = re.compile(r"sk-ant-api[A-Za-z0-9_-]{20,}")
 _TOKEN_LABEL_RE = re.compile(
     r'(?i)\b(?:secret|token|api[_-]?key|apikey|password|passwd|access[_-]?key)\b\s*[:=]\s*["\']?([A-Za-z0-9+/=_\-]{32,})'
 )
@@ -71,8 +81,7 @@ def scan_bytes(data: bytes, path: str) -> list[Finding]:
 
     for line_num, line in enumerate(lines, start=1):
         stripped = line.rstrip()
-        if stripped.endswith("cairn:allow-secret"):
-            continue
+        suppressed = stripped.endswith("cairn:allow-secret")
 
         for m in _PRIVATE_KEY_RE.finditer(line):
             findings.append(
@@ -93,6 +102,52 @@ def scan_bytes(data: bytes, path: str) -> list[Finding]:
                     excerpt=_mask(m.group(0)),
                 )
             )
+
+        for m in _PUBLIC_KEY_RE.finditer(line):
+            findings.append(
+                Finding(
+                    rule="public_key",
+                    path=path,
+                    line=line_num,
+                    excerpt=_mask(m.group(0)),
+                )
+            )
+
+        for m in _SSH_PUBLIC_KEY_RE.finditer(line):
+            findings.append(
+                Finding(
+                    rule="ssh_public_key",
+                    path=path,
+                    line=line_num,
+                    excerpt=_mask(m.group(0)),
+                )
+            )
+
+        for m in _GITHUB_TOKEN_RE.finditer(line):
+            findings.append(
+                Finding(
+                    rule="github_token",
+                    path=path,
+                    line=line_num,
+                    excerpt=_mask(m.group(0)),
+                )
+            )
+
+        for m in _ANTHROPIC_KEY_RE.finditer(line):
+            findings.append(
+                Finding(
+                    rule="anthropic_api_key",
+                    path=path,
+                    line=line_num,
+                    excerpt=_mask(m.group(0)),
+                )
+            )
+
+        # The credential and key-material rules above are not suppressible: the
+        # marker terminates one line, but a key block spans many, so suppressing
+        # its header would pass the whole key.
+        if suppressed:
+            continue
 
         for m in _TOKEN_LABEL_RE.finditer(line):
             token = m.group(1)
