@@ -99,6 +99,21 @@ class TestCairnInitGitignore:
         content = (tmp_vault / ".gitignore").read_text()
         assert "assets/local/" in content or "assets/local" in content
 
+    def test_existing_gitignore_rules_are_preserved(self, tmp_path):
+        """An existing .gitignore is merged, never overwritten: a user rule that
+        excludes sensitive files must survive re-running init."""
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / ".gitignore").write_text("secrets/\n*.env\n")
+
+        result = run(["cairn", "init", str(vault)])
+        assert result.returncode == 0
+
+        content = (vault / ".gitignore").read_text()
+        assert "secrets/" in content
+        assert "*.env" in content
+        assert "assets/local/" in content
+
 
 # ---------------------------------------------------------------------------
 # cairn init: hook installation

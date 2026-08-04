@@ -22,6 +22,8 @@ def get_allowlist():
 def check_remotes(vault_path: Path, allowlist: list[str]):
     result = run_git(["remote", "-v"], vault_path)
     if result.returncode != 0:
+        if (vault_path / ".git").exists():
+            return False, "error: could not read remotes; allowlist not verified"
         return True, ""
     urls = set()
     for line in result.stdout.strip().splitlines():
@@ -87,10 +89,14 @@ def run_init(args):
 
     gi_path = vault_path / ".gitignore"
     if gi_path.exists():
-        messages.append(".gitignore already exists")
+        added = vault.merge_gitignore(vault_path)
+        if added:
+            messages.append(f".gitignore already exists; added {len(added)} missing rule(s)")
+        else:
+            messages.append(".gitignore already exists")
     else:
+        vault.write_gitignore(vault_path)
         messages.append("Created .gitignore")
-    vault.write_gitignore(vault_path)
 
     allowlist = get_allowlist()
     install_hooks(vault_path, allowlist)
