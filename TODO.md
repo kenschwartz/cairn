@@ -23,6 +23,7 @@ These are specified in DESIGN.md "Pre-commit content scan" but deferred from v1.
 - Labelled high-entropy-token rule and its Shannon-entropy gate (catches generic unlabeled API tokens like `api_key: <random>`; v1 catches only prefixed/key-format credentials).
 - `cairn:allow-secret` suppression marker (needed once any false-positive-prone rule ships; v1 has none).
 - Bounded history scan in `cairn doctor` (`--scan-history`, the `--no-verify` backstop; v1 relies on server-side scanning for this).
+- `(?: BLOCK)?` suffix for the `public_key` rule: a real PGP PUBLIC key block (`-----BEGIN PGP PUBLIC KEY BLOCK-----`) currently matches neither rule. Found in the 2026-08-04 gate re-derivation; `private_key` got the suffix (Ken's catch-all-key-material intent), `public_key` deferred as cleanliness-policy polish. A documenting negative test in `tests/unit/test_scan.py` flags it.
 
 ## Losses to recover if ever needed
 
