@@ -7,6 +7,8 @@ project: cairn
 
 **Written 2026-08-03 when the session ended mid-loop. This is the resume point. Read it before doing anything else with Phase 1.**
 
+**RESOLVED 2026-08-04: the rework is built, reviewed, and merged to dev. See docs/reviews/build-phase1-rework-2026-08-04.md and review-phase1-rework-2026-08-04.md. This doc is history now, not a resume point.**
+
 ## Where Phase 1 stands
 
 The Panel loop ran through step 4 of 6. The verdict is **REWORK**. Nothing has merged to `dev`.
