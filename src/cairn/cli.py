@@ -16,7 +16,6 @@ def main():
 
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.add_argument("--fix", action="store_true")
-    doctor_parser.add_argument("--scan-history", type=int, default=20)
 
     new_parser = subparsers.add_parser("new")
     new_parser.add_argument("title", nargs="?")

@@ -1,6 +1,7 @@
 import hashlib
 import os
 import stat
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,11 +38,8 @@ def _pyyaml_ok():
         return False
 
 
-def _local_bin_on_path():
-    home = Path.home()
-    local_bin = str(home / ".local" / "bin")
-    path = os.environ.get("PATH", "")
-    return local_bin in path
+def _cairn_on_path():
+    return shutil.which("cairn") is not None
 
 
 def _is_git_repo(vault_path: Path):
@@ -66,51 +64,6 @@ def _verify_hook(hook_path: Path, expected_content: str):
     if actual_hash != expected_hash:
         return False, f"{hook_path.name} content mismatch (SHA-256)"
     return True, ""
-
-
-def _history_scan(vault_path: Path, depth: int):
-    findings = []
-    result = subprocess.run(
-        ["git", "ls-files"],
-        capture_output=True,
-        text=True,
-        cwd=str(vault_path),
-        env=os.environ.copy(),
-    )
-    for path in result.stdout.strip().splitlines():
-        filepath = vault_path / path
-        if filepath.is_file():
-            try:
-                data = filepath.read_bytes()
-                findings.extend(scan_mod.scan_bytes(data, path))
-            except OSError:
-                pass
-
-    log_result = subprocess.run(
-        ["git", "log", "--format=%H", f"-n{depth}"],
-        capture_output=True,
-        text=True,
-        cwd=str(vault_path),
-        env=os.environ.copy(),
-    )
-    for commit_hash in log_result.stdout.strip().splitlines():
-        files_result = subprocess.run(
-            ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash],
-            capture_output=True,
-            text=True,
-            cwd=str(vault_path),
-            env=os.environ.copy(),
-        )
-        for path in files_result.stdout.strip().splitlines():
-            content_result = subprocess.run(
-                ["git", "show", f"{commit_hash}:{path}"],
-                capture_output=True,
-                cwd=str(vault_path),
-                env=os.environ.copy(),
-            )
-            if content_result.returncode == 0:
-                findings.extend(scan_mod.scan_bytes(content_result.stdout, path))
-    return findings
 
 
 def run_doctor(args):
@@ -192,23 +145,10 @@ def run_doctor(args):
     else:
         messages.append(f"remotes: {remote_msg} FAIL")
 
-    if _local_bin_on_path():
-        messages.append("~/.local/bin on PATH: OK")
+    if _cairn_on_path():
+        messages.append("cairn executable on PATH: OK")
     else:
-        messages.append("warning: ~/.local/bin is not on PATH")
-
-    depth = (
-        args.scan_history
-        if hasattr(args, "scan_history") and args.scan_history is not None
-        else 20
-    )
-    history_findings = _history_scan(vault_path, depth)
-    if history_findings:
-        messages.append(
-            f"warning: history scan found {len(history_findings)} potential secret(s)"
-        )
-        for f in history_findings[:5]:
-            messages.append(f"  {f.rule}: {f.path}:{f.line} {f.excerpt}")
+        messages.append("warning: cairn executable is not on PATH")
 
     if args.fix and (pc_fail or pp_fail):
         hooks_dir.mkdir(parents=True, exist_ok=True)

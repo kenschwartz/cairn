@@ -29,3 +29,9 @@ These are specified in DESIGN.md "Pre-commit content scan" but deferred from v1.
 
 - `REVIEW.md` for the 2026-07-24 cross-family review (lost in a `/tmp` wipe). The decisions are integrated into DESIGN.md; the per-finding rationale is gone. The CFG repo `probable-guacamole` may hold a pre-review `decisions.md`; check before any rewrite.
 - `decisions.md` D027-D042 from that review (same loss). Locked decisions survive in DESIGN.md; the reasoning does not.
+
+## Review follows (2026-08-04 Phase 1 rework review, deferred not forgotten)
+
+- Manifest DECODE failures are fail-open: `pre_commit.py.tmpl` wraps the staged-manifest parse in a broad `except Exception: pass`, so a corrupt manifest silently disables asset integrity checks. Tighten to fail-closed or document the decision in DESIGN.md. (rev1 Tier-1 NOTE)
+- Allowlist prefix check is string-only: `https://github.com/CFG-INNERSOURCE/../evil` passes `startswith`. URL normalization would close it; threat is the owner bypassing their own control, so low priority defense-in-depth. (rev1 NOTE)
+- `check_remotes` preview fails open when `git remote -v` itself errors (`init.py:11-14`). The pre-push hook is the hard control, but the preview should fail closed too. (rev2 NOTE)
