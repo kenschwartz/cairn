@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+
+ALLOWLIST = {{ALLOWLIST}}
+
+
+def main():
+    if sys.version_info < (3, 8):
+        print("cairn pre-push hook requires Python 3.8+", file=sys.stderr)
+        sys.exit(1)
+
+    remote_name = sys.argv[1] if len(sys.argv) > 1 else ""
+    remote_url = sys.argv[2] if len(sys.argv) > 2 else ""
+
+    if remote_name and not remote_url.startswith(("http", "git@", "ssh://")):
+        result = subprocess.run(
+            ["git", "remote", "get-url", remote_name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            remote_url = result.stdout.strip()
+
+    allowed = any(remote_url.startswith(prefix) for prefix in ALLOWLIST)
+    if not allowed:
+        print(
+            f"cairn: remote URL not in allowlist: {remote_url}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
