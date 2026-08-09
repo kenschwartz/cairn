@@ -5,3 +5,12 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Vault artifacts: this is the cairn SOURCE repo, not a vault. If cairn is ever
+# run in this repo root by accident (e.g. a builder smoke-testing a write
+# command), do not let it create/commit vault files here.
+/notes/
+/moc/
+/indexes/
+/dashboard.md
+/assets/
