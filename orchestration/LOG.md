@@ -27,3 +27,9 @@ what:   cairn.links (build_index, inbound_links + cache), cairn search (text+fil
 why:    Track B Phase 3a (read/generate side; rename+reindex follow in 3b). Cross-family: GLM gate (45c1721), Fable build (70d3e53), GLM review.
 review: GLM caught THREE dashboard spec-divergences the builder introduced/followed: projects excluded from recently-created (DESIGN:689 says all notes), todo regex missing leading-whitespace (DESIGN:687), sort tiebreak direction (DESIGN:689 path-asc). Also found my OWN gate test had encoded the same wrong 'projects excluded' assumption - corrected it to check the section. The builder's honest disclosure of its interpretation is what clued the review in. No repo pollution this round (builder heeded the tmp-dir warning).
 verify: 308 passed / 0 skipped / 0 failed (287 + 21), host-verified in worktree
+
+## 2026-08-09T17:47Z phase-3b -> main
+what:   cairn rename (title+updated, slug recompute, git mv + -2/-3 collision, dirty-tree precheck, original-bytes rollback, broken-link report via inbound_links), cairn reindex (regenerate dashboard + link cache; extensible generator list)
+why:    Track B Phase 3b (mutation/orchestration side; completes Phase 3). Cross-family: GLM gate (2eda383), Fable build (de22293), GLM review.
+review: The builder correctly REFUSED to edit a buggy gate test (test_collision seeded a.md titled 'Same' but collision is on filename same.md) and reported it - exactly the discipline. GLM fixed the gate test (seed a real same.md). rename safety reviewed: dirty-tree precheck, original-bytes capture before mutate, rollback on git-mv failure (restore + git reset, never --hard), commit-failure leaves write (DESIGN:755), non-fatal broken-link report. No repo pollution.
+verify: 317 passed / 0 skipped / 0 failed (308 + 9), host-verified in worktree
