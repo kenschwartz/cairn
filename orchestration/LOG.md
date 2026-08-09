@@ -38,3 +38,8 @@ what:   cairn tags (list+counts, freq-desc, read-only, frontmatter-only), cairn 
 why:    Track B Phase 4 - the multi-file-write SAFETY SEAM. Cross-family: GLM gate (4d84cd9), Fable build (dca948a), GLM review.
 review: GLM reviewed tag.py on the seam: collision-before-write, zero-match, partial-failure, single-commit, and scan-still-applies (the commit triggers the pre-commit hook, so no rewrite lands a secret) - all correct. One edge-case bug: a note with BOTH old and new produced [new,new]; fixed with a dedup + pin. No contested finding -> no GLM-fleet escalation needed. No pollution.
 verify: 331 passed / 0 skipped / 0 failed (317 + 14), host-verified in worktree
+## 2026-08-09T17:59Z phase-5 -> main  (ALL PHASES COMPLETE)
+what:   cairn asset add (normal <=1MB -> assets/ + commit; >1MB without --large refuse; --large -> gitignored assets/local/ + tracked assets/local.manifest.json entry [sha256/size/added/referenced_by, sorted], manifest committed not binary); --note appends relative link + sets source_url
+why:    Track B Phase 5 (final). Cross-family: GLM gate (d106a1e), Fable build (c674b2a), GLM review.
+review: GLM reviewed asset.py. Manifest format matches DESIGN:593-625 (manifest_version, entries sorted by path, sorted keys + 2-space indent for byte-stability). The corruption test PROVES the Phase-1 hook verifies the manifest sha against the on-disk file live (corrupt file -> next commit blocked). Resolved the decisions.md oversimplification: --large cannot use assets/ (hook caps it at 1MB), so it uses assets/local/ + manifest (DESIGN option 3). Assets pass the credential scan on commit. No pollution.
+verify: 336 passed / 0 skipped / 0 failed (331 + 5), host-verified in worktree
