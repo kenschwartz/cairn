@@ -87,19 +87,26 @@ tool. The vaults Cairn manages at work are a separate thing entirely and never c
 
 ## Status
 
-**Built and released (`v1.1.0`): the full feature set, all five phases.** 336 hermetic tests
-passing. Installable via `brew tap kenschwartz/cairn https://github.com/kenschwartz/cairn &&
-brew install cairn` (then `brew upgrade cairn` for new releases) or the self-contained offline
-zipapp. Every phase was built cross-family (GLM-authored gating tests, Fable build, GLM review,
-host-verify) per `orchestration/LOG.md`.
+**Built and released (`v1.1.1`): the full feature set, all five phases.** 340 hermetic tests
+passing (verified from a clean checkout with the network denied). Installable via
+`brew tap kenschwartz/cairn https://github.com/kenschwartz/cairn && brew install cairn`
+(then `brew upgrade cairn` for new releases) or the self-contained offline zipapp. Every phase
+was built cross-family (GLM-authored gating tests, Fable build, GLM review, host-verify) per
+`orchestration/LOG.md`.
+
+`v1.1.1` adds a full independent Fable adversarial review of the merged code (3 reviewers), run
+with the suite offline and `capture` exercised at a real TTY. That review caught and fixed real
+defects the first pass missed - notably `commit_paths` bundling any pre-staged file into a write
+command's auto-commit (latent across all commands), and the Phase-4 safety seam's secret-block
+being untested. See `orchestration/LOG.md` and [TODO.md](./TODO.md) (deferred items).
 
 Commands: `init`, `doctor`, `new`, `capture`, `validate`, `remote add`, `search`, `dashboard`,
 `rename`, `reindex`, `tags`, `tag rename`/`remove`, `asset add`. The pre-commit credential scan
 and git hooks (pre-commit + pre-push) guard every write; `cairn doctor` verifies them.
 
 Deferred to later releases (see [TODO.md](./TODO.md)): the v2 scan rules (entropy token,
-`cairn:allow-secret` suppression, bounded history scan), tag merge, and a separate `homebrew-cairn`
-tap repo if a bare `brew tap kenschwartz/cairn` is ever wanted.
+`cairn:allow-secret` suppression, bounded history scan), tag merge, link-index lazy rebuild,
+and a separate `homebrew-cairn` tap repo if a bare `brew tap kenschwartz/cairn` is ever wanted.
 
 A completeness pass and adversarial reviews have run on the design; see [REVIEW.md](./REVIEW.md).
 Decisions that resolved DESIGN's open points are in [docs/decisions.md](./docs/decisions.md).
