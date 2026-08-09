@@ -9,3 +9,9 @@ what:   init/doctor/render read scan.py + hook templates via importlib.resources
 why:    v1.0.0 release smoke: the offline zipapp crashed in install_hooks with NotADirectoryError because __file__ points inside the archive. The shipped test_offline_install only ran --version, so it never imported the hook-render path and missed it. Brew/pip installs were unaffected (real files on disk); only the zipapp path was broken.
 review: found by release smoke (Track A), not a code-review pass; the regression test pins it both ways (old code crashes, new code passes). 230 passed (+1).
 verify: rebuilt zipapp from fixed src + bundled pure-python PyYAML; ran init/new/doctor + a secret-block under a yaml-free venv python (no PyPI) - all green, hook still blocks aws_access_key_id
+
+## 2026-08-09T17:15Z trackb-prereq -> main
+what:   shared read infra - frontmatter.read_frontmatter, vault.iter_notes/iter_notes_and_moc, tags.normalize_tag fixed to DESIGN:441; + docs/decisions.md; + conftest XDG_CONFIG_HOME/XDG_CACHE_HOME session redirects
+why:    Track B prerequisite; every read-side command (validate/search/dashboard/rename/tags) needs the reader + walker; normalize_tag under-implemented DESIGN:441 (latent false-green). Cross-family test-first: GLM-authored gate (b02bde3), Fable build (a0ae90a), GLM review fix (dba0080).
+review: GLM reviewed the diff; confirmed normalize_tag matches slugs.slugify's ascii-ignore (Agent A's "keeps non-ASCII" summary was wrong - checked the real code, avoided a divergent "fix"). One review fix: read_frontmatter encoding=utf-8 to match the write path.
+verify: 260 passed / 0 skipped / 0 failed (230 existing + 30 new gating), host-verified in the builder worktree
