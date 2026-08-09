@@ -11,6 +11,8 @@ from cairn.commands.search import run_search
 from cairn.commands.dashboard import run_dashboard
 from cairn.commands.rename import run_rename
 from cairn.commands.reindex import run_reindex
+from cairn.commands.tags import run_tags
+from cairn.commands.tag import run_tag
 
 
 def main():
@@ -63,6 +65,16 @@ def main():
 
     subparsers.add_parser("reindex")
 
+    tags_parser = subparsers.add_parser("tags")
+
+    tag_parser = subparsers.add_parser("tag")
+    tag_subparsers = tag_parser.add_subparsers(dest="tag_command")
+    tag_rename_parser = tag_subparsers.add_parser("rename")
+    tag_rename_parser.add_argument("old")
+    tag_rename_parser.add_argument("new")
+    tag_remove_parser = tag_subparsers.add_parser("remove")
+    tag_remove_parser.add_argument("tag")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -85,6 +97,10 @@ def main():
         return run_rename(args)
     elif args.command == "reindex":
         return run_reindex(args)
+    elif args.command == "tags":
+        return run_tags(args)
+    elif args.command == "tag":
+        return run_tag(args)
     else:
         parser.print_help()
         return 1

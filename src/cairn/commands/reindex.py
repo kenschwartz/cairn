@@ -4,6 +4,7 @@ from pathlib import Path
 
 from cairn import links
 from cairn.commands.dashboard import run_dashboard
+from cairn.commands.tags import generate_tags_index
 
 
 def run_reindex(args):
@@ -22,14 +23,15 @@ def run_reindex(args):
     # Generator list: extensible for Phase 4
     generators = [
         ("dashboard", run_dashboard),
+        ("tags_index", lambda _: generate_tags_index(vault_path)),
         ("link_cache", lambda _: links.build_index(vault_path)),
     ]
 
     # Run each generator
     for name, generator in generators:
         result = generator(None)
-        # Generators handle their own commits (dashboard) or cache writes (links)
-        if result != 0 and name == "dashboard":
+        # Generators handle their own commits (dashboard, tags_index) or cache writes (links)
+        if result != 0 and name in ("dashboard", "tags_index"):
             return result
 
     return 0
