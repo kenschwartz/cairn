@@ -7,6 +7,8 @@ from cairn.commands.new import run_new
 from cairn.commands.capture import run_capture
 from cairn.commands.validate import run_validate
 from cairn.commands.remote import run_remote
+from cairn.commands.search import run_search
+from cairn.commands.dashboard import run_dashboard
 
 
 def main():
@@ -44,6 +46,15 @@ def main():
     remote_add_parser.add_argument("url")
     remote_add_parser.add_argument("--name")
 
+    search_parser = subparsers.add_parser("search")
+    search_parser.add_argument("query", nargs="*")
+    search_parser.add_argument("--tag", action="append")
+    search_parser.add_argument("--type")
+    search_parser.add_argument("--status")
+    search_parser.add_argument("--project")
+
+    subparsers.add_parser("dashboard")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -58,6 +69,10 @@ def main():
         return run_validate(args)
     elif args.command == "remote":
         return run_remote(args)
+    elif args.command == "search":
+        return run_search(args)
+    elif args.command == "dashboard":
+        return run_dashboard(args)
     else:
         parser.print_help()
         return 1
