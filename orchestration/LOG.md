@@ -21,3 +21,9 @@ what:   cairn capture (one-source rule + inbox tagging + title derivation), cair
 why:    Track B Phase 2. Cross-family test-first: GLM-authored gate (ca1dd1f, 27 tests), Fable build, GLM review.
 review: GLM reviewed capture/validate/remote. Accepted the fcntl non-blocking stdin peek in capture - it is the only way to satisfy BOTH 'positional + inherited-empty-stdin works' and 'positional + piped-stdin fails' (DESIGN:851) without PTY plumbing in tests; correct in production (TTY skipped, pipe-with-data=source, empty pipe=not). Noted as the one fragile spot if Cairn ever targets non-Mac/Linux. validate deferred duplicate-basename (ambiguous in flat notes/). Minor nits (unused body binding, dead OPTIONAL_FIELDS) left.
 verify: 287 passed / 0 skipped / 0 failed (260 + 27), host-verified in builder worktree
+
+## 2026-08-09T17:39Z phase-3a -> main
+what:   cairn.links (build_index, inbound_links + cache), cairn search (text+filters, normalizer, malformed rule, read-only), cairn dashboard (sections, byte-identical no-op skip, untagged count)
+why:    Track B Phase 3a (read/generate side; rename+reindex follow in 3b). Cross-family: GLM gate (45c1721), Fable build (70d3e53), GLM review.
+review: GLM caught THREE dashboard spec-divergences the builder introduced/followed: projects excluded from recently-created (DESIGN:689 says all notes), todo regex missing leading-whitespace (DESIGN:687), sort tiebreak direction (DESIGN:689 path-asc). Also found my OWN gate test had encoded the same wrong 'projects excluded' assumption - corrected it to check the section. The builder's honest disclosure of its interpretation is what clued the review in. No repo pollution this round (builder heeded the tmp-dir warning).
+verify: 308 passed / 0 skipped / 0 failed (287 + 21), host-verified in worktree
