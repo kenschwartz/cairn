@@ -8,7 +8,7 @@ class Cairn < Formula
   desc "Deterministic Markdown-vault note CLI for a locked-down work Mac"
   homepage "https://github.com/kenschwartz/cairn"
   url "https://github.com/kenschwartz/cairn/archive/refs/tags/v1.0.0.tar.gz"
-  sha256 "4c887b6ecfdb2d83868797f0a353dc1e7ee6c7774202cf2ea5d95c1dff95768e"
+  sha256 "4c887b6ecfdb2d83868797f0a353dc1e7ee6c7774202cf2ea5f95c1dff95768e"
   license "MIT"
   head "https://github.com/kenschwartz/cairn.git", branch: "main"
 
