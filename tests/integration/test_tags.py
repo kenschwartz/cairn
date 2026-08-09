@@ -107,6 +107,17 @@ class TestTagRename:
         r = _run(tmp_vault, ["tag", "rename", "nonexistent", "other"])
         assert r.returncode != 0, "renaming a tag that matches nothing must refuse"
 
+    def test_note_with_both_old_and_new_no_duplicate(self, tmp_vault):
+        # A note carrying both old and new: rename old->new yields a single new
+        # (merge), not [new, new]. Collision check excludes notes that also
+        # carry old, so the rebuild must dedup.
+        _note(tmp_vault, "a.md", dict(FM, id="a1", title="A", tags=["old", "new"]), "x\n")
+        r = _run(tmp_vault, ["tag", "rename", "old", "new"])
+        assert r.returncode == 0, r.stderr
+        fa, _ = read_frontmatter(tmp_vault / "notes" / "a.md")
+        assert fa["tags"] == ["new"], f"expected single 'new', got {fa['tags']}"
+
+
     def test_single_commit_of_rewritten_notes(self, tmp_vault):
         _note(tmp_vault, "a.md", dict(FM, id="a1", title="A", tags=["old"]), "x\n")
         _note(tmp_vault, "b.md", dict(FM, id="b1", title="B", tags=["old"]), "x\n")

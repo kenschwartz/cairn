@@ -92,8 +92,11 @@ def _run_tag_rename(args):
             # Read full content for rewrite
             fm_current, body = frontmatter.read_frontmatter(note_path)
 
-            # Rebuild tags list: replace old with new, preserving order
-            new_tags = [new_tag if t == old_tag else t for t in note_tags]
+            # Rebuild tags list: replace old with new, preserving order, dedup
+            # (a note carrying BOTH old and new would otherwise get [new, new]).
+            new_tags = list(dict.fromkeys(
+                new_tag if t == old_tag else t for t in note_tags
+            ))
 
             # Update frontmatter
             fm_current["tags"] = new_tags
