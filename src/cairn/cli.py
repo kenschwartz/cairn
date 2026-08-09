@@ -18,7 +18,7 @@ from cairn.commands.asset import run_asset
 
 def main():
     parser = argparse.ArgumentParser(prog="cairn")
-    parser.add_argument("--version", action="version", version="cairn 1.1.0")
+    parser.add_argument("--version", action="version", version="cairn 1.1.1")
     subparsers = parser.add_subparsers(dest="command")
 
     init_parser = subparsers.add_parser("init")
