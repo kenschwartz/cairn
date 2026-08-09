@@ -26,6 +26,13 @@ def hermetic_env(tmp_path_factory):
     fake_home = tmp_path_factory.mktemp("fake_home")
     fake_global_cfg = fake_home / ".gitconfig"
     fake_system_cfg = fake_home / "git_system.cfg"
+    # XDG dirs so Phase-2+ config and the Phase-3 link cache never touch the
+    # real user config/cache. Created up front so code that reads them finds an
+    # empty, hermetic location rather than the real ~/.config or ~/.cache.
+    fake_xdg_config = fake_home / "xdg-config"
+    fake_xdg_cache = fake_home / "xdg-cache"
+    fake_xdg_config.mkdir()
+    fake_xdg_cache.mkdir()
 
     # Write a minimal global config so git has an identity.
     fake_global_cfg.write_text(
@@ -43,6 +50,8 @@ def hermetic_env(tmp_path_factory):
         "GIT_AUTHOR_EMAIL": "test@cairn.local",
         "GIT_COMMITTER_NAME": "Test Author",
         "GIT_COMMITTER_EMAIL": "test@cairn.local",
+        "XDG_CONFIG_HOME": str(fake_xdg_config),
+        "XDG_CACHE_HOME": str(fake_xdg_cache),
     }
 
     original = {k: os.environ.get(k) for k in env_overrides}
