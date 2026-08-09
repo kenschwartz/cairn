@@ -7,8 +7,8 @@ class Cairn < Formula
 
   desc "Deterministic Markdown-vault note CLI for a locked-down work Mac"
   homepage "https://github.com/kenschwartz/cairn"
-  url "https://github.com/kenschwartz/cairn/archive/refs/tags/v1.1.0.tar.gz"
-  sha256 "9df60671f80eeafc0e4cbb5094be4c872f9d00e98f87d8839ca7d12df144a4fc"
+  url "https://github.com/kenschwartz/cairn/archive/refs/tags/v1.1.1.tar.gz"
+  sha256 "4262ae71c2191c491e4010c5e05b13d10f9204f75a4282fa2b8ff364aac9d947"
   license "MIT"
   head "https://github.com/kenschwartz/cairn.git", branch: "main"
 
@@ -24,6 +24,6 @@ class Cairn < Formula
   end
 
   test do
-    assert_match "1.1.0", shell_output("#{bin}/cairn --version")
+    assert_match "1.1.1", shell_output("#{bin}/cairn --version")
   end
 end
