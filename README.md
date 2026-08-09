@@ -17,9 +17,9 @@ Named for the stacked-stone trail marker. Notes as cairns you build yourself.
 
 ## What it is
 
-A [Python](https://www.python.org/) CLI, installed per-user with no admin rights via a public
-[Homebrew](https://brew.sh/) tap (co-primary) or [pipx](https://pipx.pypa.io/), with an offline
-bundle for locked-down networks. Manages a folder of Markdown notes:
+A [Python](https://www.python.org/) CLI (3.11+), installed per-user with no admin rights via a public
+[Homebrew](https://brew.sh/) tap (co-primary) or [pipx](https://pipx.ppa.io/), with a self-contained
+offline bundle for locked-down networks. Manages a folder of Markdown notes:
 
 - Frontmatter-validated notes with a fixed type and status vocabulary
 - Fast capture into an inbox, and a todo-first dashboard
@@ -29,6 +29,41 @@ bundle for locked-down networks. Manages a folder of Markdown notes:
 - A pre-commit credential and key-material scan (private keys, public keys, AWS keys, GitHub tokens, Anthropic keys) before every auto-commit; corporate GitHub scans server-side as backstop. v1 does not attempt PII detection.
 
 Full specification: [DESIGN.md](./DESIGN.md).
+
+## Install
+
+Needs Python 3.11+ and git. No admin rights, no sudo.
+
+**Homebrew (co-primary, the only path with a real `brew upgrade` story):**
+
+    brew tap kenschwartz/cairn
+    brew install cairn
+
+**pipx:**
+
+    pipx install git+https://github.com/kenschwartz/cairn.git
+
+**Offline zipapp (for a network where PyPI and github.com are unreachable at runtime):**
+build the single-file `.pyz` on a connected machine, then copy it over. It bundles
+Cairn and a pure-Python PyYAML, so it runs under any Python 3.11+ with nothing else
+installed:
+
+    python -m zipapp src --output cairn.pyz --python /usr/bin/env\ python3 --main cairn.cli:main
+
+(For a fully self-contained bundle that needs no PyYAML on the host, copy the `yaml/`
+package into `src/` before running zipapp. The release artifact `cairn-vX.Y.Z.pyz`
+is built this way.)
+
+## Quick start
+
+    cairn init ~/my-vault        # folders, git, .gitignore, pre-commit + pre-push hooks
+    cd ~/my-vault
+    cairn new "First note" --tag onboard
+    cairn doctor                 # verifies hooks, deps, config
+
+Every successful write auto-commits to local git. The pre-commit hook scans for
+credentials before any commit lands. Back up with a manual `git push` to an
+allowlisted remote.
 
 ## Where it is built, and where it runs
 
@@ -49,11 +84,13 @@ tool. The vaults Cairn manages at work are a separate thing entirely and never c
 
 ## Status
 
-Phase 1-3 are designed, adversarially reviewed, and build-ready; Phase 4 (tag mutation and
-listing) is deferred with open questions in [TODO.md](./TODO.md). No code yet. Phase 1 order is skeleton,
-`cairn init`, `cairn doctor`, content scan, `cairn new`, then auto-commit, with hooks and the scan
-landing before the first auto-commit. See the implementation phases in [DESIGN.md](./DESIGN.md).
+**Phase 1 is built and released (`v1.0.1`):** `cairn init`, `cairn doctor`, `cairn new`,
+the pre-commit credential scan, the git hooks (pre-commit + pre-push), and local auto-commit.
+230 hermetic tests passing. Installable via `brew tap kenschwartz/cairn && brew install cairn`
+or the offline zipapp. `v1.0.1` also fixes the zipapp offline path (package-data reads via
+`importlib.resources`, so `init`/`doctor` work from the `.pyz`, not just `--version`).
 
-A completeness pass has run on the design (see [REVIEW.md](./REVIEW.md)): three Opus passes on
-2026-08-03. Testing documentation belongs in the design, and the prompts used to produce it are
-captured alongside it.
+Phases 2-5 (capture, validate, search, dashboard, links/rename, tags, assets) are designed and
+build-ready; see [DESIGN.md](./DESIGN.md). Open questions and deferred work: [TODO.md](./TODO.md).
+
+A completeness pass and adversarial reviews have run on the design; see [REVIEW.md](./REVIEW.md).
