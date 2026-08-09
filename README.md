@@ -87,13 +87,20 @@ tool. The vaults Cairn manages at work are a separate thing entirely and never c
 
 ## Status
 
-**Phase 1 is built and released (`v1.0.1`):** `cairn init`, `cairn doctor`, `cairn new`,
-the pre-commit credential scan, the git hooks (pre-commit + pre-push), and local auto-commit.
-230 hermetic tests passing. Installable via `brew tap kenschwartz/cairn && brew install cairn`
-or the offline zipapp. `v1.0.1` also fixes the zipapp offline path (package-data reads via
-`importlib.resources`, so `init`/`doctor` work from the `.pyz`, not just `--version`).
+**Built and released (`v1.1.0`): the full feature set, all five phases.** 336 hermetic tests
+passing. Installable via `brew tap kenschwartz/cairn https://github.com/kenschwartz/cairn &&
+brew install cairn` (then `brew upgrade cairn` for new releases) or the self-contained offline
+zipapp. Every phase was built cross-family (GLM-authored gating tests, Fable build, GLM review,
+host-verify) per `orchestration/LOG.md`.
 
-Phases 2-5 (capture, validate, search, dashboard, links/rename, tags, assets) are designed and
-build-ready; see [DESIGN.md](./DESIGN.md). Open questions and deferred work: [TODO.md](./TODO.md).
+Commands: `init`, `doctor`, `new`, `capture`, `validate`, `remote add`, `search`, `dashboard`,
+`rename`, `reindex`, `tags`, `tag rename`/`remove`, `asset add`. The pre-commit credential scan
+and git hooks (pre-commit + pre-push) guard every write; `cairn doctor` verifies them.
+
+Deferred to later releases (see [TODO.md](./TODO.md)): the v2 scan rules (entropy token,
+`cairn:allow-secret` suppression, bounded history scan), tag merge, and a separate `homebrew-cairn`
+tap repo if a bare `brew tap kenschwartz/cairn` is ever wanted.
 
 A completeness pass and adversarial reviews have run on the design; see [REVIEW.md](./REVIEW.md).
+Decisions that resolved DESIGN's open points are in [docs/decisions.md](./docs/decisions.md).
+
