@@ -33,3 +33,8 @@ what:   cairn rename (title+updated, slug recompute, git mv + -2/-3 collision, d
 why:    Track B Phase 3b (mutation/orchestration side; completes Phase 3). Cross-family: GLM gate (2eda383), Fable build (de22293), GLM review.
 review: The builder correctly REFUSED to edit a buggy gate test (test_collision seeded a.md titled 'Same' but collision is on filename same.md) and reported it - exactly the discipline. GLM fixed the gate test (seed a real same.md). rename safety reviewed: dirty-tree precheck, original-bytes capture before mutate, rollback on git-mv failure (restore + git reset, never --hard), commit-failure leaves write (DESIGN:755), non-fatal broken-link report. No repo pollution.
 verify: 317 passed / 0 skipped / 0 failed (308 + 9), host-verified in worktree
+## 2026-08-09T17:54Z phase-4 -> main
+what:   cairn tags (list+counts, freq-desc, read-only, frontmatter-only), cairn tag rename/remove (multi-file frontmatter rewrite: normalize, zero-match refuse, collision-before-write refuse, per-file atomic, best-effort partial-failure report, single commit of successes), indexes/tags.md generator wired into reindex
+why:    Track B Phase 4 - the multi-file-write SAFETY SEAM. Cross-family: GLM gate (4d84cd9), Fable build (dca948a), GLM review.
+review: GLM reviewed tag.py on the seam: collision-before-write, zero-match, partial-failure, single-commit, and scan-still-applies (the commit triggers the pre-commit hook, so no rewrite lands a secret) - all correct. One edge-case bug: a note with BOTH old and new produced [new,new]; fixed with a dedup + pin. No contested finding -> no GLM-fleet escalation needed. No pollution.
+verify: 331 passed / 0 skipped / 0 failed (317 + 14), host-verified in worktree
