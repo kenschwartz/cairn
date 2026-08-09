@@ -58,9 +58,10 @@ class TestRename:
         assert fm["updated"] != "2026-08-01"   # updated refreshed
 
     def test_collision_uses_suffix(self, tmp_vault):
-        _note(tmp_vault, "a.md", dict(FM, id="a1", title="Same"), "x\n")
+        # Collision is on FILENAME (slug.md), not title. Seed a real same.md.
+        _note(tmp_vault, "same.md", dict(FM, id="a1", title="Same"), "x\n")
         _note(tmp_vault, "b.md", dict(FM, id="b1", title="Other"), "x\n")
-        # Rename b to "Same" -> slug collides with existing same.md -> -2 suffix
+        # Rename b to "Same" -> slug "same" collides with existing same.md -> -2
         r = _rename(tmp_vault, ["notes/b.md", "Same"])
         assert r.returncode == 0, r.stderr
         assert (tmp_vault / "notes" / "same-2.md").exists()
