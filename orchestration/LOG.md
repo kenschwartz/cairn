@@ -15,3 +15,9 @@ what:   shared read infra - frontmatter.read_frontmatter, vault.iter_notes/iter_
 why:    Track B prerequisite; every read-side command (validate/search/dashboard/rename/tags) needs the reader + walker; normalize_tag under-implemented DESIGN:441 (latent false-green). Cross-family test-first: GLM-authored gate (b02bde3), Fable build (a0ae90a), GLM review fix (dba0080).
 review: GLM reviewed the diff; confirmed normalize_tag matches slugs.slugify's ascii-ignore (Agent A's "keeps non-ASCII" summary was wrong - checked the real code, avoided a divergent "fix"). One review fix: read_frontmatter encoding=utf-8 to match the write path.
 verify: 260 passed / 0 skipped / 0 failed (230 existing + 30 new gating), host-verified in the builder worktree
+
+## 2026-08-09T17:26Z phase-2 -> main
+what:   cairn capture (one-source rule + inbox tagging + title derivation), cairn validate (schema-only DESIGN:845, inbox-relaxed, real-date check, read-only), cairn remote add (nested subparser, allowlist-checked via config.get_allowlist, default origin, refuse-on-existing)
+why:    Track B Phase 2. Cross-family test-first: GLM-authored gate (ca1dd1f, 27 tests), Fable build, GLM review.
+review: GLM reviewed capture/validate/remote. Accepted the fcntl non-blocking stdin peek in capture - it is the only way to satisfy BOTH 'positional + inherited-empty-stdin works' and 'positional + piped-stdin fails' (DESIGN:851) without PTY plumbing in tests; correct in production (TTY skipped, pipe-with-data=source, empty pipe=not). Noted as the one fragile spot if Cairn ever targets non-Mac/Linux. validate deferred duplicate-basename (ambiguous in flat notes/). Minor nits (unused body binding, dead OPTIONAL_FIELDS) left.
+verify: 287 passed / 0 skipped / 0 failed (260 + 27), host-verified in builder worktree
