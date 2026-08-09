@@ -20,7 +20,7 @@ def read_frontmatter(path: Path) -> tuple[dict, str]:
 
     Round-trips with write_frontmatter for the cairn field set.
     """
-    content = path.read_text()
+    content = path.read_text(encoding="utf-8")
 
     if not content.startswith("---"):
         raise ValueError(f"Missing frontmatter block: {path}")
