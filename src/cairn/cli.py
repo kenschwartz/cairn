@@ -9,6 +9,8 @@ from cairn.commands.validate import run_validate
 from cairn.commands.remote import run_remote
 from cairn.commands.search import run_search
 from cairn.commands.dashboard import run_dashboard
+from cairn.commands.rename import run_rename
+from cairn.commands.reindex import run_reindex
 
 
 def main():
@@ -55,6 +57,12 @@ def main():
 
     subparsers.add_parser("dashboard")
 
+    rename_parser = subparsers.add_parser("rename")
+    rename_parser.add_argument("path")
+    rename_parser.add_argument("title")
+
+    subparsers.add_parser("reindex")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -73,6 +81,10 @@ def main():
         return run_search(args)
     elif args.command == "dashboard":
         return run_dashboard(args)
+    elif args.command == "rename":
+        return run_rename(args)
+    elif args.command == "reindex":
+        return run_reindex(args)
     else:
         parser.print_help()
         return 1
