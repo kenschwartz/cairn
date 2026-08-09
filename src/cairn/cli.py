@@ -13,6 +13,7 @@ from cairn.commands.rename import run_rename
 from cairn.commands.reindex import run_reindex
 from cairn.commands.tags import run_tags
 from cairn.commands.tag import run_tag
+from cairn.commands.asset import run_asset
 
 
 def main():
@@ -75,6 +76,14 @@ def main():
     tag_remove_parser = tag_subparsers.add_parser("remove")
     tag_remove_parser.add_argument("tag")
 
+    asset_parser = subparsers.add_parser("asset")
+    asset_subparsers = asset_parser.add_subparsers(dest="asset_command")
+    asset_add_parser = asset_subparsers.add_parser("add")
+    asset_add_parser.add_argument("path")
+    asset_add_parser.add_argument("--note")
+    asset_add_parser.add_argument("--large", action="store_true")
+    asset_add_parser.add_argument("--source-url")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -101,6 +110,8 @@ def main():
         return run_tags(args)
     elif args.command == "tag":
         return run_tag(args)
+    elif args.command == "asset":
+        return run_asset(args)
     else:
         parser.print_help()
         return 1
