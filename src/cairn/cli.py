@@ -8,7 +8,7 @@ from cairn.commands.new import run_new
 
 def main():
     parser = argparse.ArgumentParser(prog="cairn")
-    parser.add_argument("--version", action="version", version="cairn 1.0.0")
+    parser.add_argument("--version", action="version", version="cairn 1.0.1")
     subparsers = parser.add_subparsers(dest="command")
 
     init_parser = subparsers.add_parser("init")
