@@ -36,8 +36,11 @@ Needs Python 3.11+ and git. No admin rights, no sudo.
 
 **Homebrew (co-primary, the only path with a real `brew upgrade` story):**
 
-    brew tap kenschwartz/cairn
+    brew tap kenschwartz/cairn https://github.com/kenschwartz/cairn
     brew install cairn
+
+(The tap points at this repo directly; the formula lives in `Formula/cairn.rb`.
+Upgrades: `brew update && brew upgrade cairn` after a new tag is cut.)
 
 **pipx:**
 
