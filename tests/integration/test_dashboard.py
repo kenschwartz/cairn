@@ -79,8 +79,11 @@ class TestDashboardSections:
         _note(tmp_vault, "q.md", dict(FM, id="q1", title="ProjDone", type="project", status="done"), "x\n")
         _dashboard(tmp_vault)
         text = (tmp_vault / "dashboard.md").read_text()
-        assert "Proj" in text
-        assert "ProjDone" not in text
+        # Active projects section lists active projects, excludes done ones.
+        # (A done project may still appear elsewhere, e.g. Recently created.)
+        active_section = text.split("## Active projects")[1]
+        assert "Proj" in active_section
+        assert "ProjDone" not in active_section
 
     def test_untagged_count_present(self, tmp_vault):
         _note(tmp_vault, "u.md", dict(FM, id="u1", title="U", tags=["untagged"]), "x\n")
@@ -90,3 +93,19 @@ class TestDashboardSections:
         # an untagged section exists and names the untagged note
         assert "untagged" in text.lower()
         assert "U" in text
+
+    def test_recently_created_includes_project_notes(self, tmp_vault):
+        # DESIGN:689: recently created is the 10 newest notes regardless of type.
+        # Projects are not excluded (a builder had invented that exclusion).
+        _note(tmp_vault, "old.md", dict(FM, id="o1", title="OldNote", created="2026-08-01"), "x\n")
+        _note(tmp_vault, "proj.md", dict(FM, id="p1", title="FreshProject", type="project", status="active", created="2026-08-09"), "x\n")
+        _dashboard(tmp_vault)
+        recent_section = (tmp_vault / "dashboard.md").read_text().split("## Recently created")[1]
+        assert "FreshProject" in recent_section
+
+    def test_indented_todos_counted(self, tmp_vault):
+        # DESIGN:687: open todos allow optional leading whitespace (subtasks).
+        _note(tmp_vault, "sub.md", dict(FM, id="s1", title="Sub"), "  - [ ] indented subtask\n")
+        _dashboard(tmp_vault)
+        assert "indented subtask" in (tmp_vault / "dashboard.md").read_text()
+

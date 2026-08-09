@@ -13,7 +13,7 @@ def _extract_todos(body: str) -> list[str]:
     Matches `- [ ]` and `* [ ]`.
     Returns list of task text in order.
     """
-    pattern = r"^[\-*]\s\[\s\]\s+(.+)$"
+    pattern = r"^\s*[\-*]\s\[\s\]\s+(.+)$"
     matches = re.findall(pattern, body, re.MULTILINE)
     return matches
 
@@ -75,16 +75,13 @@ def run_dashboard(args):
     # 1. Open todos: already grouped, sort by note path then task order
     open_todos_sorted = sorted(open_todos_by_note.items())
 
-    # 2. Recently created: 10 newest by created desc then path asc
-    # Exclude type=project notes (they have their own section)
+    # 2. Recently created: 10 newest by created desc then path asc (DESIGN:689).
+    # All note types included (projects are not excluded; dedup with Active
+    # projects is a future UX call for Ken). Two-pass stable sort so the path
+    # tiebreak is ascending while created is descending.
+    recently_created = sorted(all_notes_data, key=lambda x: x[0])
     recently_created = sorted(
-        [
-            (rel_path, fm, body)
-            for rel_path, fm, body in all_notes_data
-            if fm.get("type") != "project"
-        ],
-        key=lambda x: (x[1].get("created", ""), x[0]),
-        reverse=True
+        recently_created, key=lambda x: x[1].get("created", ""), reverse=True
     )[:10]
 
     # 3. Active projects: type=project AND status=active, sorted by path
