@@ -26,9 +26,7 @@ def check_remotes(vault_path: Path, allowlist: list[str]):
 
 
 def install_hooks(vault_path: Path, allowlist: list[str]):
-    import cairn.scan as scan_mod
-
-    scan_source = Path(scan_mod.__file__).read_text()
+    scan_source = render.read_scan_source()
     pre_commit = render.render_pre_commit(scan_source)
     pre_push = render.render_pre_push(allowlist)
 

@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import cairn.scan as scan_mod
 from cairn.hooks import render
 from cairn.config import get_allowlist
 from cairn.commands.init import check_remotes
@@ -113,7 +112,7 @@ def run_doctor(args):
         hookspath_fail = True
 
     allowlist = get_allowlist()
-    scan_source = Path(scan_mod.__file__).read_text()
+    scan_source = render.read_scan_source()
     expected_pre_commit = render.render_pre_commit(scan_source)
     expected_pre_push = render.render_pre_push(allowlist)
 

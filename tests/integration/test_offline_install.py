@@ -88,3 +88,51 @@ class TestZipappInstall:
         assert result.returncode == 0, (
             "zipapp must run --version cleanly (scan.py stdlib constraint)"
         )
+
+
+class TestZipappCommandsFromArchive:
+    def test_zipapp_init_and_doctor(self, tmp_path):
+        """init and doctor must run from the zipapp, not just --version.
+
+        Both read scan.py and the hook templates as package data and inline
+        them into the installed hooks. Doing that read via Path(__file__) breaks
+        inside a zipapp, where __file__ points inside the archive and is not a
+        real path (NotADirectoryError). importlib.resources is the zipapp-safe
+        way. Without that fix this test crashes inside install_hooks.
+
+        This is the regression for the v1.0.0 release smoke that found the
+        offline front door broken: the old test_offline_install only ran
+        --version, which never imports the hook-render path.
+        """
+        import cairn
+        src_dir = Path(cairn.__file__).parent.parent
+        pyz = tmp_path / "cairn.pyz"
+        subprocess.run(
+            [sys.executable, "-m", "zipapp", str(src_dir),
+             "--output", str(pyz),
+             "--python", "/usr/bin/env python3",
+             "--main", "cairn.cli:main"],
+            capture_output=True, check=True, env=os.environ.copy(),
+        )
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        init = subprocess.run(
+            [sys.executable, str(pyz), "init", str(vault)],
+            capture_output=True, text=True, env=os.environ.copy(),
+        )
+        assert init.returncode == 0, (
+            f"zipapp init must exit 0.\nstdout: {init.stdout}\nstderr: {init.stderr}"
+        )
+
+        doctor = subprocess.run(
+            [sys.executable, str(pyz), "doctor"],
+            capture_output=True, text=True, env=os.environ.copy(),
+            cwd=str(vault),
+        )
+        assert doctor.returncode == 0, (
+            f"zipapp doctor must exit 0.\nstdout: {doctor.stdout}\nstderr: {doctor.stderr}"
+        )
+        # doctor verifies the hooks it rendered from package data; both must pass.
+        assert "pre-commit hook: OK" in doctor.stdout
+        assert "pre-push hook: OK" in doctor.stdout
