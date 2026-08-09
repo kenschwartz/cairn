@@ -32,8 +32,12 @@ def commit_paths(paths: list[Path], cwd: Path, message: str):
             cwd=str(cwd),
             env=os.environ.copy(),
         )
+    # Commit ONLY the command-owned paths via an explicit pathspec. A bare
+    # `git commit -m` would sweep in ANY other file the user had staged,
+    # violating "commit only command-owned paths" (DESIGN:746-753). The pathspec
+    # scopes the commit; other staged files stay staged and uncommitted.
     return subprocess.run(
-        ["git", "commit", "-m", message],
+        ["git", "commit", "-m", message, "--", *[str(p) for p in paths]],
         capture_output=True,
         text=True,
         cwd=str(cwd),

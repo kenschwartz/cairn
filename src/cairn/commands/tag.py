@@ -43,6 +43,11 @@ def _run_tag_rename(args):
     old_tag = tags.normalize_tag(old_raw)
     new_tag = tags.normalize_tag(new_raw)
 
+    # old == new (after normalization): nothing to do. Don't rewrite or commit.
+    if old_tag == new_tag:
+        print(f"old and new normalize to the same tag '{old_tag}'; nothing to do")
+        return 0
+
     # Collect candidate notes and detect malformed notes
     candidates = []
     malformed = []

@@ -87,7 +87,6 @@ class TestCaptureSources:
         # positional + --file
         r = _capture(tmp_vault, ["positional text", "--file", str(src)])
         assert r.returncode != 0, "two sources must fail"
-        assert (tmp_vault / "notes").glob("*.md") is not None
         assert not list((tmp_vault / "notes").glob("*.md")), "no note on failure"
 
     def test_stdin_and_positional_fails(self, tmp_vault):

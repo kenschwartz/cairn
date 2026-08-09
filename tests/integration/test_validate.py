@@ -125,6 +125,16 @@ class TestValidateInboxRelaxed:
 
 
 class TestValidateOutput:
+    def test_duplicate_filename_across_notes_and_moc_is_error(self, tmp_vault):
+        # DESIGN:834 - same basename in notes/ and moc/ is an ambiguous collision.
+        (tmp_vault / "moc").mkdir(exist_ok=True)
+        _write_note(tmp_vault, "dup.md", VALID_FM)
+        moc_fm = dict(VALID_FM, id="moc00001")
+        (tmp_vault / "moc" / "dup.md").write_text(write_frontmatter(moc_fm) + "x\n")
+        r = _validate(tmp_vault)
+        assert r.returncode != 0
+        assert "duplicate note filename" in r.stdout.lower()
+
     def test_summary_counts_present(self, tmp_vault):
         _write_note(tmp_vault, "ok.md", VALID_FM)
         r = _validate(tmp_vault)

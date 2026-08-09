@@ -21,8 +21,20 @@ def run_validate(args):
     if moc_dir.is_dir():
         notes.extend(moc_dir.glob("*.md"))
 
+    # Duplicate note filenames (DESIGN:834): in the flat layout a basename
+    # collision can only happen across notes/ and moc/; it makes wiki-link
+    # resolution by basename ambiguous. Report it.
+    from collections import Counter
+    seen = Counter(p.name for p in notes)
+    dupes = sorted(name for name, count in seen.items() if count > 1)
+
     errors = []
     warnings = []
+    for name in dupes:
+        errors.append(
+            (vault_path, "ERROR",
+             f"duplicate note filename: {name} (appears in more than one of notes/, moc/)")
+        )
 
     for note_path in notes:
         try:
@@ -53,7 +65,7 @@ def run_validate(args):
 
         # Check tags (missing tags is error even for inbox)
         if "tags" in fm:
-            if not fm["tags"] or (isinstance(fm["tags"], list) and len(fm["tags"]) == 0):
+            if not fm["tags"]:
                 errors.append((note_path, "ERROR", "missing tags (empty list)"))
 
         # Validate date format (YYYY-MM-DD)

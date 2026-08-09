@@ -35,3 +35,28 @@ These are specified in DESIGN.md "Pre-commit content scan" but deferred from v1.
 - Manifest DECODE failures are fail-open: `pre_commit.py.tmpl` wraps the staged-manifest parse in a broad `except Exception: pass`, so a corrupt manifest silently disables asset integrity checks. Tighten to fail-closed or document the decision in DESIGN.md. (rev1 Tier-1 NOTE)
 - Allowlist prefix check is string-only: `https://github.com/CFG-INNERSOURCE/../evil` passes `startswith`. URL normalization would close it; threat is the owner bypassing their own control, so low priority defense-in-depth. (rev1 NOTE)
 - `check_remotes` preview fails open when `git remote -v` itself errors (`init.py:11-14`). The pre-push hook is the hard control, but the preview should fail closed too. (rev2 NOTE)
+
+## From the v1.1 cross-family adversarial review (2026-08-09, deferred not forgotten)
+
+These came out of the independent Fable review pass over the merged v1.1 code.
+The real defects it found were fixed for v1.1.1 (see orchestration/LOG.md); the
+following are deferred as known limitations:
+
+- **Link index is a full rebuild, not lazy.** `links.build_index` re-scans every
+  note on every call; DESIGN:422 specifies lazy rebuild keyed on (sha256, mtime,
+  size). The cache stores the validity tuple but never reads it for staleness.
+  Correct (always fresh), just not the perf contract. v1.2.
+- **Single-user / no-concurrency model (read-modify-write).** Tag rename/remove
+  and asset --note read a note then write it; a concurrent edit between the two
+  would be lost. Cairn is a single-user CLI; concurrent writes are unsupported.
+  The dirty-tree precheck (`is_dirty`) guards the common "uncommitted edits on
+  the target" case for `new` and `rename`; tag/asset do not precheck. Add the
+  precheck to tag/asset if multi-window editing ever becomes a real workflow.
+- **Asset re-add updates the manifest entry in place.** Re-adding an asset with
+  the same path replaces its entry (new sha/size, refreshed `added`). This is
+  correct (the manifest is the current-state integrity record, not append-only
+  history), but it is silent. Consider warning when an entry already exists.
+- **validate does not type-check frontmatter values.** `tags: "inbox"` (a string
+  instead of a list) is accepted. cairn write commands always emit lists; this
+  only affects hand-edited notes. Add `isinstance` checks if hand-editing abuse
+  becomes common.

@@ -72,16 +72,18 @@ def run_search(args):
             if not all(tag in note_tags for tag in normalized_tag_filters):
                 filters_match = False
 
-        # Type filter
-        if type_filter and fm.get("type") != type_filter:
+        # Type/Status/Project filters: DESIGN:668 normalizes surrounding
+        # whitespace and case for these comparisons.
+        def _norm(v):
+            return (v or "").strip().lower()
+
+        if type_filter and _norm(fm.get("type")) != _norm(type_filter):
             filters_match = False
 
-        # Status filter
-        if status_filter and fm.get("status") != status_filter:
+        if status_filter and _norm(fm.get("status")) != _norm(status_filter):
             filters_match = False
 
-        # Project filter
-        if project_filter and fm.get("project") != project_filter:
+        if project_filter and _norm(fm.get("project")) != _norm(project_filter):
             filters_match = False
 
         # Skip if filters don't match (when filters are specified)

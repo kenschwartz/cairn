@@ -368,6 +368,30 @@ class TestAutoCommit:
         status = self._git(tmp_vault, "status", "--porcelain")
         assert "unrelated.md" in status.stdout
 
+    def test_prestaged_unrelated_file_not_bundled(self, tmp_vault):
+        """
+        A file the user has ALREADY staged (git add) must NOT be swept into a
+        cairn auto-commit. commit_paths scopes its commit to command-owned paths
+        via an explicit pathspec (DESIGN:746-753).
+
+        Found by adversarial review: the dirty-UNSTAGED test above gave false
+        confidence (a bare `git commit` skips unstaged files anyway). This covers
+        the STAGED case, which a bare `git commit` WOULD have bundled.
+        """
+        other = tmp_vault / "notes" / "staged.md"
+        other.write_text("---\nid: aabbccdd\n---\nuser-staged draft\n")
+        self._git(tmp_vault, "add", "notes/staged.md")  # explicitly STAGED
+
+        self._run_new(tmp_vault, "Cairn Note")
+
+        show = self._git(tmp_vault, "show", "--name-only", "HEAD")
+        assert "staged.md" not in show.stdout, (
+            "a pre-staged unrelated file must not be bundled into the auto-commit"
+        )
+        # and it remains staged (uncommitted by cairn)
+        status = self._git(tmp_vault, "status", "--porcelain")
+        assert "staged.md" in status.stdout
+
     def test_existing_dirty_command_owned_path_stops_write(self, tmp_vault):
         """
         If the target file already has uncommitted changes, cairn new must

@@ -140,6 +140,18 @@ class TestTagRename:
         combined = r.stdout + r.stderr
         assert "bad" in combined.lower(), "the failed note must be named in the report"
 
+    def test_rename_blocked_when_note_contains_a_secret(self, tmp_vault):
+        # The safety seam's core claim: the multi-file rewrite commits through
+        # the pre-commit hook, so a secret already present in a rewritten note
+        # blocks the commit. (Found untested by adversarial review.)
+        _note(tmp_vault, "leak.md", dict(FM, id="l1", title="Leak", tags=["old"]),
+              "creds: AKIAIOSFODNN7EXAMPLE\n")
+        before = _git(["rev-parse", "HEAD"], tmp_vault).stdout.strip()
+        r = _run(tmp_vault, ["tag", "rename", "old", "new"])
+        assert r.returncode != 0, "hook must block the tag-rename commit when a note holds a secret"
+        after = _git(["rev-parse", "HEAD"], tmp_vault).stdout.strip()
+        assert before == after, "no commit may land when the hook blocks"
+
 
 class TestTagRemove:
     def test_removes_tag_from_all_notes(self, tmp_vault):

@@ -41,8 +41,11 @@ def normalize_tag(tag: str) -> str:
         seg = seg.strip("-")
         processed.append(seg)
 
-    # Step 5: Rejoin with '/'
-    result = "/".join(processed)
+    # Step 5: Rejoin with '/', dropping empty segments. A segment can be empty
+    # when all its chars were dropped (e.g. a non-decomposing char like CJK in
+    # one slash-segment); keeping it would leave a stray leading/trailing slash
+    # (e.g. "cafe/" for input "cafe/<cjk>"). Filter empties.
+    result = "/".join(seg for seg in processed if seg)
 
     # Step 6: Empty result -> return original unchanged
     if not result:

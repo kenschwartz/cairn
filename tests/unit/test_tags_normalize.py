@@ -54,6 +54,14 @@ def test_does_not_consume_slash_as_separator():
     assert normalize_tag("Project/Cairn Build") == "project/cairn-build"
 
 
+def test_mixed_ascii_nonascii_no_stray_slash():
+    # A non-decomposing char (ß) in one slash-segment drops to an empty segment
+    # (matches slugs.slugify's ascii handling); the empty segment is filtered so
+    # no stray trailing slash remains. Found by adversarial review.
+    assert normalize_tag("café/ß") == "cafe"
+    assert normalize_tag("ß/café") == "cafe"
+
+
 def test_lowercase_only_input_unchanged():
     assert normalize_tag("cfg") == "cfg"
     assert normalize_tag("a-b") == "a-b"
